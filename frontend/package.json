@@ -1,0 +1,66 @@
+{
+  "name": "iris-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on tcp:5173 && electron .",
+    "build": "vite build",
+    "build:renderer": "vite build",
+    "package:win": "npm run build:renderer && electron-builder --win nsis",
+    "package:store": "npm run build:renderer && electron-builder --win appx"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.5.0",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.0",
+    "electron": "^25.9.8",
+    "electron-builder": "^24.13.3",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "vite": "^5.4.15",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.iris.accessibility",
+    "productName": "IRIS Accessibility",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/iris-backend",
+        "to": "backend/iris-backend",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "appx"
+      ],
+      "artifactName": "IRIS-${version}-${arch}.${ext}"
+    },
+    "appx": {
+      "identityName": "IRISAccessibility",
+      "publisher": "CN=IRISAccessibility",
+      "publisherDisplayName": "IRIS",
+      "displayName": "IRIS Accessibility",
+      "applicationId": "IRISAccessibility"
+    }
+  }
+}

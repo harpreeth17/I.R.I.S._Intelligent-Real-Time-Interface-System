@@ -1,0 +1,23 @@
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+PROFILES_DIR = BASE_DIR / 'profiles'
+PROFILES_JSON = PROFILES_DIR / 'profiles.json'
+
+WS_HOST = 'localhost'
+WS_PORT = 8765
+
+TARGET_FPS = 30.0
+DWELL_RADIUS = 50
+DWELL_DURATION = 0.8
+DWELL_COOLDOWN = 1.0
+BLINK_EAR_THRESHOLD = 0.20
+BLINK_MIN_DURATION = 0.15
+
+CALIBRATION_POINT_SECONDS = 1.5
+
+THEME = {
+    'bg': '#0a0f1e',
+    'accent': '#4fc3f7',
+    'soft': '#90caf9',
+}

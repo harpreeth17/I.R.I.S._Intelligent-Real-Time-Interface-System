@@ -1,0 +1,13 @@
+{
+  "name": "iris-accessibility-prototype",
+  "version": "1.0.0",
+  "private": true,
+  "description": "I.R.I.S gaze-controlled accessibility desktop prototype",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "pack:backend": "powershell -ExecutionPolicy Bypass -File ./scripts/pack-backend.ps1",
+    "pack:win": "npm run pack:backend && npm --prefix frontend run package:win",
+    "pack:store": "npm run pack:backend && npm --prefix frontend run package:store"
+  }
+}
