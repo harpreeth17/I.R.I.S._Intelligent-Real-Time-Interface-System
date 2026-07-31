@@ -34,15 +34,20 @@ const defaultSettings = {
   cursorScaleY: 1.15,
   cursorGainLeft: 0.9,
   cursorGainRight: 1.35,
-  cursorGainUp: 1.2,
-  cursorGainDown: 1.0,
+  cursorGainUp: 1.5,
+  cursorGainDown: 1.35,
+  cursorYAxisSensitivity: 2.35,
+  irisMotionScaleX: 1.45,
+  irisMotionScaleY: 2.2,
   invertXAxis: false,
   invertYAxis: false,
   maxCursorSpeed: 1600,
-  irisSmoothingAlpha: 0.4,
+  cursorSpeedMultiplier: 0.5,
+  irisSmoothingAlpha: 0.28,
   cursorOffsetX: 0,
   cursorOffsetY: 0,
   calibrationSettleTime: 0.45,
+  webcamMode: 'auto',
   demoMode: false,
 };
 
@@ -55,12 +60,20 @@ export default function App() {
   const [profiles, setProfiles] = useState([]);
   const [activeProfile, setActiveProfile] = useState(null);
   const [calibration, setCalibration] = useState({ active: false, targets: [], progress: 0, result: null });
+  const [telemetry, setTelemetry] = useState({ previewFrame: null, rawIris: null, predictedRaw: null, ear: null });
+  const [keyboardText, setKeyboardText] = useState('');
 
   const onEvent = useCallback((payload) => {
     if (payload.type === 'telemetry') {
       setCursor(payload.cursor || { x: 0, y: 0 });
       setDwellProgress(payload.dwellProgress || 0);
       setStatus((prev) => ({ ...prev, ...(payload.status || {}) }));
+      setTelemetry({
+        previewFrame: payload.previewFrame ?? null,
+        rawIris: payload.rawIris ?? null,
+        predictedRaw: payload.predictedRaw ?? null,
+        ear: payload.ear ?? null,
+      });
       if (payload.calibration) {
         setCalibration(payload.calibration);
       }
@@ -119,6 +132,8 @@ export default function App() {
         <GazeKeyboardScreen
           dwellDuration={settings.uiDwellDuration ?? settings.dwellDuration}
           repeatCooldown={settings.uiRepeatCooldown ?? 1.1}
+          text={keyboardText}
+          setText={setKeyboardText}
         />
       );
     }
@@ -138,7 +153,7 @@ export default function App() {
       );
     }
 
-    return <DashboardScreen cursor={cursor} status={status} dwellProgress={dwellProgress} />;
+    return <DashboardScreen cursor={cursor} status={status} dwellProgress={dwellProgress} telemetry={telemetry} />;
   })();
 
   const displayCursor = useMemo(() => {

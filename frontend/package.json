@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
-    "dev:renderer": "vite",
+    "dev:renderer": "vite --strictPort --port 5173",
     "dev:electron": "wait-on tcp:5173 && electron .",
     "build": "vite build",
     "build:renderer": "vite build",

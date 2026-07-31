@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DwellableButton from '@/components/DwellableButton';
 import { applyPrediction, getPredictions } from '@/utils/predictions';
 
@@ -8,11 +8,128 @@ const KEY_ROWS = [
   ['Z', 'X', 'C', 'V', 'B', 'N', 'M'],
 ];
 
-export default function GazeKeyboardScreen({ dwellDuration = 0.8, repeatCooldown = 1.1 }) {
-  const [text, setText] = useState('');
+export default function GazeKeyboardScreen({
+  dwellDuration = 0.8,
+  repeatCooldown = 1.1,
+  text = '',
+  setText,
+}) {
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceError, setVoiceError] = useState(null);
+  const recognitionRef = useRef(null);
   const predictions = useMemo(() => getPredictions(text), [text]);
 
-  const append = (key) => setText((prev) => `${prev}${key}`);
+  const append = useCallback((key) => setText?.((prev) => `${prev}${key}`), [setText]);
+
+  const replaceText = useCallback((nextText) => setText?.(nextText), [setText]);
+
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      return undefined;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
+    recognitionRef.current = recognition;
+
+    const applyTranscript = (transcript) => {
+      const spoken = transcript.trim();
+      if (!spoken) return;
+
+      const command = spoken.toLowerCase();
+      if (command === 'space') {
+        append(' ');
+        return;
+      }
+      if (command === 'backspace') {
+        replaceText((prev) => prev.slice(0, -1));
+        return;
+      }
+      if (command === 'enter' || command === 'new line') {
+        append('\n');
+        return;
+      }
+      if (command === 'clear text' || command === 'clear') {
+        replaceText('');
+        return;
+      }
+
+      const normalized = spoken
+        .replace(/\bcomma\b/gi, ',')
+        .replace(/\bperiod\b/gi, '.')
+        .replace(/\bquestion mark\b/gi, '?')
+        .replace(/\bexclamation mark\b/gi, '!')
+        .replace(/\bnew line\b/gi, '\n');
+
+      replaceText((prev) => `${prev}${prev.endsWith(' ') || prev.endsWith('\n') || prev.length === 0 ? '' : ' '}${normalized}`);
+    };
+
+    recognition.onresult = (event) => {
+      let interim = '';
+      let finalTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        const transcript = result[0]?.transcript || '';
+        if (result.isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interim += transcript;
+        }
+      }
+
+      if (finalTranscript) {
+        applyTranscript(finalTranscript);
+        setVoiceError(null);
+      }
+      if (interim) {
+        setVoiceError(null);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      setVoiceError(event.error || 'Voice input error');
+      setVoiceEnabled(false);
+    };
+
+    recognition.onend = () => {
+      if (voiceEnabled) {
+        try {
+          recognition.start();
+        } catch (_error) {
+          // Ignore restart races.
+        }
+      }
+    };
+
+    return () => {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      recognition.abort();
+      recognitionRef.current = null;
+    };
+  }, [append, replaceText, voiceEnabled]);
+
+  useEffect(() => {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+
+    if (voiceEnabled) {
+      setVoiceError(null);
+      try {
+        recognition.start();
+      } catch (_error) {
+        // start() throws if already started; safe to ignore.
+      }
+    } else {
+      recognition.stop();
+    }
+  }, [voiceEnabled]);
 
   const speak = () => {
     if (!window.speechSynthesis || !text.trim()) return;
@@ -25,7 +142,19 @@ export default function GazeKeyboardScreen({ dwellDuration = 0.8, repeatCooldown
   return (
     <section className="h-full rounded-3xl border border-sky-300/20 bg-[#101a31] p-6">
       <h2 className="text-xl font-semibold text-sky-100">Gaze Keyboard</h2>
-      <p className="mb-4 text-sm text-slate-300">Dwell on keys to type. Predictions update after each keystroke.</p>
+      <p className="mb-4 text-sm text-slate-300">Dwell on keys to type. Voice typing is available for dictation and simple commands.</p>
+
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-sky-300/20 bg-[#0b1226] p-3 text-sm text-slate-200">
+        <button
+          type="button"
+          onClick={() => setVoiceEnabled((prev) => !prev)}
+          className={`min-h-[52px] rounded-xl border px-4 ${voiceEnabled ? 'border-teal-300/40 bg-teal-300/20 text-teal-100' : 'border-sky-300/25 bg-sky-300/10 text-slate-100'}`}
+        >
+          {voiceEnabled ? 'Stop Voice' : 'Start Voice'}
+        </button>
+        <span>{window.SpeechRecognition || window.webkitSpeechRecognition ? 'Voice input ready' : 'Voice input is not supported in this browser'}</span>
+        {voiceError && <span className="text-rose-200">{voiceError}</span>}
+      </div>
 
       <div className="mb-4 min-h-[120px] rounded-2xl border border-sky-300/20 bg-[#0b1226] p-4 text-lg text-slate-100">{text || '...'}</div>
 

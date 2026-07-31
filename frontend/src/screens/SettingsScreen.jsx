@@ -10,6 +10,20 @@ export default function SettingsScreen({ settings, onSettingsChange, profiles, a
 
       <div className="grid grid-cols-2 gap-4 rounded-2xl border border-sky-300/20 bg-[#0b1226] p-4">
         <label className="text-sm text-slate-200">
+          Webcam source
+          <select
+            value={settings.webcamMode || 'auto'}
+            onChange={(e) => update({ webcamMode: e.target.value })}
+            className="mt-2 w-full rounded-xl border border-sky-300/20 bg-[#0f1930] px-3 py-2 text-slate-100"
+          >
+            <option value="auto">Auto detect</option>
+            <option value="laptop">Laptop webcam</option>
+            <option value="external">External webcam</option>
+          </select>
+          <p className="mt-2 text-xs text-slate-400">Auto detect rescans periodically and switches to a plugged-in external camera when available.</p>
+        </label>
+
+        <label className="text-sm text-slate-200">
           Mouse dwell duration: {settings.dwellDuration}s
           <input
             type="range"

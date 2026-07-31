@@ -1,7 +1,13 @@
 import DwellableButton from '@/components/DwellableButton';
 
 const APPS = [
-  { id: 'browser', label: 'Browser', icon: 'WEB' },
+  { id: 'browser', label: 'Chrome', icon: 'WEB' },
+  { id: 'whatsapp', label: 'WhatsApp', icon: 'CHAT' },
+  { id: 'chatgpt', label: 'ChatGPT', icon: 'AI' },
+  { id: 'spotify', label: 'Spotify', icon: 'MUSIC' },
+  { id: 'youtube', label: 'YouTube', icon: 'PLAY' },
+  { id: 'calendar', label: 'Calendar', icon: 'CAL' },
+  { id: 'windowsSettings', label: 'Windows Settings', icon: 'SYS' },
   { id: 'fileManager', label: 'Files', icon: 'DIR' },
   { id: 'calculator', label: 'Calculator', icon: 'CALC' },
   { id: 'notepad', label: 'Notepad', icon: 'NOTE' },
@@ -24,7 +30,7 @@ export default function AppLauncherScreen({ settings }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4">
         {Array.from({ length: 12 }).map((_, index) => {
           const app = APPS[index];
           if (!app) {

@@ -1,29 +1,38 @@
 import DwellRing from '@/components/DwellRing';
 
-export default function DashboardScreen({ cursor, status, dwellProgress }) {
+export default function DashboardScreen({ cursor, status, dwellProgress, telemetry }) {
   const previewWidth = 420;
   const previewHeight = 240;
   const screenW = status?.screenWidth || window.screen.width;
   const screenH = status?.screenHeight || window.screen.height;
 
-  const previewX = (cursor.x / screenW) * previewWidth;
-  const previewY = (cursor.y / screenH) * previewHeight;
+  const previewSrc = telemetry?.previewFrame ? `data:image/jpeg;base64,${telemetry.previewFrame}` : null;
 
   return (
     <section className="grid h-full grid-cols-1 gap-6 xl:grid-cols-[1.4fr_1fr]">
       <div className="rounded-3xl border border-sky-300/20 bg-[#111b33] p-6 shadow-xl">
-        <h2 className="text-xl font-semibold text-sky-100">Live Gaze Preview</h2>
-        <p className="mb-6 text-sm text-slate-300">Animated cursor projection and real-time tracking telemetry.</p>
+        <h2 className="text-xl font-semibold text-sky-100">Webcam Preview</h2>
+        <p className="mb-6 text-sm text-slate-300">Live feed from the connected webcam with gaze telemetry beneath it.</p>
 
         <div
           className="relative overflow-hidden rounded-2xl border border-sky-300/20 bg-gradient-to-br from-[#0f1b36] to-[#0b1226]"
           style={{ width: previewWidth, height: previewHeight }}
         >
-          <div className="absolute inset-0 opacity-25 [background:radial-gradient(circle_at_30%_30%,rgba(79,195,247,0.25),transparent_45%)]" />
-          <div
-            className="absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-300 shadow-[0_0_20px_rgba(79,195,247,0.9)] transition-all duration-75"
-            style={{ left: previewX, top: previewY }}
-          />
+          {previewSrc ? (
+            <img
+              src={previewSrc}
+              alt="Connected webcam preview"
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-slate-400">
+              Waiting for webcam frames...
+            </div>
+          )}
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(7,12,24,0.08),rgba(7,12,24,0.42))]" />
+          <div className="pointer-events-none absolute left-3 top-3 rounded-full border border-cyan-300/30 bg-[#07111f]/70 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-cyan-100 backdrop-blur">
+            Connected webcam
+          </div>
         </div>
 
         <div className="mt-6 grid grid-cols-2 gap-4 text-sm">
@@ -33,6 +42,11 @@ export default function DashboardScreen({ cursor, status, dwellProgress }) {
           <div className="rounded-xl bg-[#0c152b] p-3 text-slate-300">
             Face: {status?.faceFound ? 'Detected' : 'Not found'}
           </div>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-2 text-xs text-slate-300">
+          <div className="rounded-xl bg-[#081028] p-2">Raw Iris: {telemetry?.rawIris ? telemetry.rawIris.map((v) => v.toFixed(3)).join(', ') : '-'}</div>
+          <div className="rounded-xl bg-[#081028] p-2">Predicted Raw: {telemetry?.predictedRaw ? Math.round(telemetry.predictedRaw[0]) + ', ' + Math.round(telemetry.predictedRaw[1]) : '-'}</div>
+          <div className="rounded-xl bg-[#081028] p-2">EAR (live): {telemetry?.ear ?? '-'}</div>
         </div>
       </div>
 

@@ -1,3 +1,4 @@
+import base64
 import asyncio
 import json
 import signal
@@ -99,9 +100,14 @@ class IrisRuntime:
         self._init_face_mesh()
         self.cap = None
         self.webcam_connected = False
+        self.webcam_index = None
+        self.webcam_mode = None
+        self.last_webcam_scan_ts = 0.0
+        self.webcam_rescan_interval = 2.0
 
         self.fps = 0.0
         self.pipeline_latency_ms = 0.0
+        self.preview_frame = None
 
         self.cursor_x = self.screen_w / 2
         self.cursor_y = self.screen_h / 2
@@ -109,6 +115,7 @@ class IrisRuntime:
         self.prev_tuned_x = self.cursor_x
         self.prev_tuned_y = self.cursor_y
         self.last_frame_ts = time.perf_counter()
+        self.last_predicted_raw = None
 
         self.dwell = DwellState()
         self.last_click_ts = 0.0
@@ -180,8 +187,9 @@ class IrisRuntime:
             self.settings['demoMode'] = True
 
     def _build_calibration_targets(self):
-        xs = [0.15, 0.5, 0.85]
-        ys = [0.15, 0.5, 0.85]
+        # Use calibration targets near the screen edges and center to improve mapping
+        xs = [0.02, 0.5, 0.98]
+        ys = [0.02, 0.5, 0.98]
         points = []
         for y_norm in ys:
             for x_norm in xs:
@@ -210,29 +218,106 @@ class IrisRuntime:
         profile_item['settings'] = self.settings
         save_profiles(self.profile_db)
 
-    def _init_webcam(self):
-        if self.cap is not None:
-            return
+    def _webcam_mode(self):
+        mode = str(self.settings.get('webcamMode', 'auto')).lower()
+        if mode not in {'auto', 'laptop', 'external'}:
+            return 'auto'
+        return mode
 
-        cap = cv2.VideoCapture(0)
+    def _webcam_indices(self):
+        mode = self._webcam_mode()
+        if mode == 'laptop':
+            return [0, 1, 2, 3, 4, 5]
+        if mode == 'external':
+            return [1, 2, 3, 4, 5, 0]
+        # Auto mode prefers external devices, then falls back to the laptop camera.
+        return [1, 2, 3, 4, 5, 0]
+
+    def _open_webcam(self, index, backend):
+        cap = cv2.VideoCapture(index, backend)
         cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-        if not cap.isOpened():
-            self.error_message = 'Webcam unavailable. Use demo mode or connect a camera.'
-            self.webcam_connected = False
+        if cap.isOpened():
+            test_ok, _ = cap.read()
+            if test_ok:
+                self.cap = cap
+                self.webcam_index = index
+                self.webcam_mode = self._webcam_mode()
+                self.webcam_connected = True
+                self.error_message = None
+                self.last_webcam_scan_ts = time.perf_counter()
+                print(f'I.R.I.S: webcam opened at index {index} with backend {backend}')
+                return True
+
+        try:
             cap.release()
+        except Exception:
+            pass
+        return False
+
+    def _encode_preview_frame(self, frame):
+        preview = cv2.resize(frame, (360, 202), interpolation=cv2.INTER_AREA)
+        ok, encoded = cv2.imencode(
+            '.jpg',
+            preview,
+            [int(cv2.IMWRITE_JPEG_QUALITY), 65],
+        )
+        if not ok:
+            return None
+        return base64.b64encode(encoded).decode('ascii')
+
+    def _init_webcam(self, force=False):
+        now_ts = time.perf_counter()
+        desired_mode = self._webcam_mode()
+
+        if self.cap is not None and not force:
+            current_group = 'internal' if self.webcam_index == 0 else 'external'
+            if desired_mode == 'laptop' and current_group == 'internal':
+                return
+            if desired_mode == 'external' and current_group == 'external':
+                return
+            if desired_mode == 'auto' and current_group == 'external':
+                return
+            if desired_mode == 'auto' and current_group == 'internal' and (now_ts - self.last_webcam_scan_ts) < self.webcam_rescan_interval:
+                return
+            self._close_webcam()
+        elif not force and (now_ts - self.last_webcam_scan_ts) < self.webcam_rescan_interval:
             return
 
-        self.cap = cap
-        self.webcam_connected = True
-        self.error_message = None
+        # Try several OpenCV capture backends on Windows to avoid MSMF grab issues.
+        backends = []
+        try:
+            # prefer DirectShow, then MSMF, then system default
+            backends = [getattr(cv2, 'CAP_DSHOW', 700), getattr(cv2, 'CAP_MSMF', 1400), cv2.CAP_ANY]
+        except Exception:
+            backends = [cv2.CAP_ANY]
+
+        for index in self._webcam_indices():
+            for backend in backends:
+                try:
+                    if self._open_webcam(index, backend):
+                            return
+                except Exception as e:
+                    # ignore and try next backend or device index
+                    print(f'I.R.I.S: webcam index {index} backend {backend} failed: {e}')
+
+        # If we reach here, all attempts failed
+        self.cap = None
+        self.webcam_index = None
+        self.webcam_connected = False
+        self.last_webcam_scan_ts = now_ts
+        self.error_message = (
+            'Webcam unavailable or in use. Close other apps using the camera and retry.'
+        )
 
     def _close_webcam(self):
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        self.webcam_index = None
+        self.webcam_mode = None
         self.webcam_connected = False
 
     def _extract_landmarks(self, frame, face_landmarks):
@@ -270,10 +355,19 @@ class IrisRuntime:
         left_height = max(abs(left_bottom[1] - left_top[1]), 1.0)
         right_height = max(abs(right_bottom[1] - right_top[1]), 1.0)
 
-        left_norm_x = (left_iris[0] - left_left_corner[0]) / left_width
-        right_norm_x = (right_iris[0] - right_left_corner[0]) / right_width
-        left_norm_y = (left_iris[1] - left_top[1]) / left_height
-        right_norm_y = (right_iris[1] - right_top[1]) / right_height
+        left_center_x = (left_left_corner[0] + left_right_corner[0]) / 2.0
+        right_center_x = (right_left_corner[0] + right_right_corner[0]) / 2.0
+        left_center_y = (left_top[1] + left_bottom[1]) / 2.0
+        right_center_y = (right_top[1] + right_bottom[1]) / 2.0
+
+        iris_motion_scale_x = float(self.settings.get('irisMotionScaleX', 1.45))
+        iris_motion_scale_y = float(self.settings.get('irisMotionScaleY', 2.2))
+
+        # Centering the eye makes vertical motion less sensitive to eyelid shape and blink drift.
+        left_norm_x = 0.5 + ((left_iris[0] - left_center_x) / left_width) * iris_motion_scale_x
+        right_norm_x = 0.5 + ((right_iris[0] - right_center_x) / right_width) * iris_motion_scale_x
+        left_norm_y = 0.5 + ((left_iris[1] - left_center_y) / left_height) * iris_motion_scale_y
+        right_norm_y = 0.5 + ((right_iris[1] - right_center_y) / right_height) * iris_motion_scale_y
 
         return np.array([left_norm_x, left_norm_y, right_norm_x, right_norm_y], dtype=np.float64)
 
@@ -282,10 +376,20 @@ class IrisRuntime:
         return bool(np.all(iris_vector >= -0.65) and np.all(iris_vector <= 1.65))
 
     def _fallback_map(self, iris_vector):
-        x_norm = float((iris_vector[0] + iris_vector[2]) / 2.0)
-        y_norm = float((iris_vector[1] + iris_vector[3]) / 2.0)
-        x_norm = max(0.0, min(1.0, x_norm))
-        y_norm = max(0.0, min(1.0, y_norm))
+        # Average left/right iris normalized coordinates
+        x_norm_raw = float((iris_vector[0] + iris_vector[2]) / 2.0)
+        y_norm_raw = float((iris_vector[1] + iris_vector[3]) / 2.0)
+
+        # Keep the fallback path responsive even before calibration by compressing the neutral band.
+        x_min_c, x_max_c = -0.08, 1.08
+        y_min_c, y_max_c = 0.18, 0.82
+
+        def remap(v, min_c, max_c):
+            v = (v - min_c) / (max_c - min_c)
+            return max(0.0, min(1.0, v))
+
+        x_norm = remap(x_norm_raw, x_min_c, x_max_c)
+        y_norm = remap(y_norm_raw, y_min_c, y_max_c)
         return x_norm * self.screen_w, y_norm * self.screen_h
 
     def _predict_cursor(self, iris_vector, dt):
@@ -298,6 +402,11 @@ class IrisRuntime:
         predicted = self.calibrator.predict(iris_vector)
         if predicted is None:
             predicted = self._fallback_map(iris_vector)
+        # store the raw predicted (pre-tuning) value for telemetry/debug
+        try:
+            self.last_predicted_raw = (float(predicted[0]), float(predicted[1]))
+        except Exception:
+            self.last_predicted_raw = None
 
         x = max(0.0, min(float(self.screen_w - 1), float(predicted[0])))
         y = max(0.0, min(float(self.screen_h - 1), float(predicted[1])))
@@ -314,10 +423,11 @@ class IrisRuntime:
         cy = self.screen_h / 2.0
         scale_x = float(self.settings.get('cursorScaleX', 1.0))
         scale_y = float(self.settings.get('cursorScaleY', 1.0))
+        y_axis_sensitivity = float(self.settings.get('cursorYAxisSensitivity', 2.35))
         gain_left = float(self.settings.get('cursorGainLeft', 0.9))
         gain_right = float(self.settings.get('cursorGainRight', 1.25))
-        gain_up = float(self.settings.get('cursorGainUp', 1.2))
-        gain_down = float(self.settings.get('cursorGainDown', 1.0))
+        gain_up = float(self.settings.get('cursorGainUp', 1.5))
+        gain_down = float(self.settings.get('cursorGainDown', 1.35))
         invert_x = bool(self.settings.get('invertXAxis', False))
         invert_y = bool(self.settings.get('invertYAxis', False))
         offset_x = float(self.settings.get('cursorOffsetX', 0.0))
@@ -331,7 +441,7 @@ class IrisRuntime:
             dy = -dy
 
         dx = dx * scale_x * (gain_right if dx >= 0 else gain_left)
-        dy = dy * scale_y * (gain_down if dy >= 0 else gain_up)
+        dy = dy * scale_y * y_axis_sensitivity * (gain_down if dy >= 0 else gain_up)
 
         tuned_x = cx + dx + offset_x
         tuned_y = cy + dy + offset_y
@@ -339,7 +449,9 @@ class IrisRuntime:
 
     def _limit_cursor_speed(self, x, y, dt):
         max_speed = float(self.settings.get('maxCursorSpeed', 1600.0))
-        max_step = max_speed * max(dt, 1.0 / TARGET_FPS)
+        speed_multiplier = float(self.settings.get('cursorSpeedMultiplier', 0.5))
+        speed_multiplier = max(0.1, min(1.0, speed_multiplier))
+        max_step = (max_speed * speed_multiplier) * max(dt, 1.0 / TARGET_FPS)
 
         dx = x - self.prev_tuned_x
         dy = y - self.prev_tuned_y
@@ -524,14 +636,18 @@ class IrisRuntime:
 
         encoded = json.dumps(payload)
         disconnected = []
-        for ws in self.clients:
+        # iterate over a snapshot to avoid concurrent modification from other coroutines
+        for ws in list(self.clients):
             try:
                 await ws.send(encoded)
             except Exception:
                 disconnected.append(ws)
 
         for ws in disconnected:
-            self.clients.discard(ws)
+            try:
+                self.clients.discard(ws)
+            except Exception:
+                pass
 
     async def _handle_message(self, data):
         msg_type = data.get('type')
@@ -689,10 +805,12 @@ class IrisRuntime:
                 if not success:
                     self.webcam_connected = False
                     self.error_message = 'Webcam frame capture failed.'
+                    self._close_webcam()
                     await asyncio.sleep(0.1)
                     continue
 
                 self.webcam_connected = True
+                self.preview_frame = self._encode_preview_frame(frame)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 landmarks = None
                 if self.mediapipe_mode == 'legacy' and self.face_mesh is not None:
@@ -751,9 +869,19 @@ class IrisRuntime:
                 'cursor': {'x': self.cursor_x, 'y': self.cursor_y},
                 'dwellProgress': self.dwell.progress,
                 'clickEvent': click_event,
+                'previewFrame': self.preview_frame,
+                'rawIris': None,
+                'predictedRaw': self.last_predicted_raw,
+                'ear': round(float(ear_value), 4),
                 'status': self._status_payload(face_found=face_found, ear=ear_value),
                 'calibration': self._calibration_payload(),
             }
+            # include raw iris vector when available (helps debug mirroring/calibration)
+            if face_found and 'iris_vector' in locals():
+                try:
+                    payload['rawIris'] = [float(x) for x in iris_vector.tolist()]
+                except Exception:
+                    payload['rawIris'] = None
             await self._broadcast(payload)
 
             delay = max(0.0, target_frame_dt - (time.perf_counter() - frame_start))
@@ -774,6 +902,8 @@ class IrisRuntime:
             'mediapipeMode': self.mediapipe_mode,
             'screenWidth': self.screen_w,
             'screenHeight': self.screen_h,
+            'webcamMode': self._webcam_mode(),
+            'webcamIndex': self.webcam_index,
         }
 
     async def run(self):

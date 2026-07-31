@@ -9,7 +9,13 @@ let mainWindow;
 let pythonProcess;
 
 const appCommands = {
-  browser: 'start msedge',
+  browser: 'start chrome',
+  whatsapp: 'start "" https://web.whatsapp.com',
+  chatgpt: 'start "" https://chatgpt.com',
+  spotify: 'start "" https://open.spotify.com',
+  youtube: 'start "" https://www.youtube.com',
+  calendar: 'start "" https://calendar.google.com',
+  windowsSettings: 'start ms-settings:',
   fileManager: 'explorer',
   calculator: 'start calc',
   notepad: 'start notepad',
