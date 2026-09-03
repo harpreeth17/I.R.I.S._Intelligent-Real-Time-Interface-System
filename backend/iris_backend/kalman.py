@@ -6,8 +6,8 @@ class KalmanFilter2D:
         self.x = np.zeros((4, 1), dtype=np.float64)
         self.P = np.eye(4, dtype=np.float64) * 1000.0
         self.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.float64)
-        self.R = np.eye(2, dtype=np.float64) * 30.0
-        self.Q_base = np.eye(4, dtype=np.float64) * 0.05
+        self.R = np.eye(2, dtype=np.float64) * 12.0
+        self.Q_base = np.eye(4, dtype=np.float64) * 0.18
 
     def predict(self, dt: float):
         F = np.array(

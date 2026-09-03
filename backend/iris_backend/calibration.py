@@ -35,7 +35,7 @@ class PolynomialCalibrator:
         x = float(self.model_x.predict(X_poly)[0])
         y = float(self.model_y.predict(X_poly)[0])
         return x, y
-
+#this is for the very beginning of the iris tracker, wherein the calibration is done and the model is saved to a file for later use.
     def to_dict(self):
         return {
             'degree': self.degree,

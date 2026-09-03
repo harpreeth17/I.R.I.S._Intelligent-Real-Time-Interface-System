@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import GazeCursor from '@/components/GazeCursor';
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
@@ -36,14 +36,14 @@ const defaultSettings = {
   cursorGainRight: 1.35,
   cursorGainUp: 1.5,
   cursorGainDown: 1.35,
-  cursorYAxisSensitivity: 2.35,
+  cursorYAxisSensitivity: 1.0,
   irisMotionScaleX: 1.45,
   irisMotionScaleY: 2.2,
   invertXAxis: false,
   invertYAxis: false,
-  maxCursorSpeed: 1600,
-  cursorSpeedMultiplier: 0.5,
-  irisSmoothingAlpha: 0.28,
+  maxCursorSpeed: 3200,
+  cursorSpeedMultiplier: 1.0,
+  irisSmoothingAlpha: 0.45,
   cursorOffsetX: 0,
   cursorOffsetY: 0,
   calibrationSettleTime: 0.45,
@@ -62,12 +62,17 @@ export default function App() {
   const [calibration, setCalibration] = useState({ active: false, targets: [], progress: 0, result: null });
   const [telemetry, setTelemetry] = useState({ previewFrame: null, rawIris: null, predictedRaw: null, ear: null });
   const [keyboardText, setKeyboardText] = useState('');
+  const frameTimesRef = useRef([]);
 
   const onEvent = useCallback((payload) => {
     if (payload.type === 'telemetry') {
+      const now = performance.now();
+      frameTimesRef.current = [...frameTimesRef.current, now].filter((timestamp) => now - timestamp <= 1000);
+      const rollingFps = Math.min(30, frameTimesRef.current.length);
+
       setCursor(payload.cursor || { x: 0, y: 0 });
       setDwellProgress(payload.dwellProgress || 0);
-      setStatus((prev) => ({ ...prev, ...(payload.status || {}) }));
+      setStatus((prev) => ({ ...prev, ...(payload.status || {}), fps: rollingFps }));
       setTelemetry({
         previewFrame: payload.previewFrame ?? null,
         rawIris: payload.rawIris ?? null,
@@ -125,7 +130,14 @@ export default function App() {
 
   const currentScreen = (() => {
     if (screen === 'calibration') {
-      return <CalibrationScreen calibration={calibration} send={send} connected={connected} />;
+      return (
+        <CalibrationScreen
+          calibration={calibration}
+          send={send}
+          connected={connected}
+          onBack={() => setScreen('dashboard')}
+        />
+      );
     }
     if (screen === 'keyboard') {
       return (
@@ -168,12 +180,23 @@ export default function App() {
     };
   }, [cursor, status]);
 
+  useEffect(() => {
+    const shouldFullscreen = screen === 'calibration' && !calibration.result;
+    window.irisAPI?.setCalibrationFullscreen?.(shouldFullscreen);
+
+    return () => {
+      if (shouldFullscreen) {
+        window.irisAPI?.setCalibrationFullscreen?.(false);
+      }
+    };
+  }, [calibration.result, screen]);
+
   return (
     <div className="h-screen bg-irisBg text-slate-100">
-      <TopBar status={status} connected={connected} modeLabel={modeLabel} />
-      <div className="flex h-[calc(100vh-4rem)]">
-        <Sidebar active={screen} onChange={setScreen} />
-        <main className="flex-1 overflow-auto p-6">{currentScreen}</main>
+      {screen !== 'calibration' && <TopBar status={status} connected={connected} modeLabel={modeLabel} />}
+      <div className={screen === 'calibration' ? 'h-full' : 'flex h-[calc(100vh-4rem)]'}>
+        {screen !== 'calibration' && <Sidebar active={screen} onChange={setScreen} />}
+        <main className={screen === 'calibration' ? 'h-full w-full overflow-hidden' : 'flex-1 overflow-auto p-6'}>{currentScreen}</main>
       </div>
       <GazeCursor x={displayCursor.x} y={displayCursor.y} />
     </div>

@@ -124,7 +124,8 @@ class IrisRuntime:
         self.calibration_active = False
         self.calibration_targets = self._build_calibration_targets()
         self.calibration_index = 0
-        self.calibration_started_ts = 0.0
+        self.calibration_point_started_ts = None
+        self.calibration_point_progress = 0.0
         self.current_point_samples = []
         self.calibration_iris_samples = []
         self.calibration_screen_samples = []
@@ -187,9 +188,8 @@ class IrisRuntime:
             self.settings['demoMode'] = True
 
     def _build_calibration_targets(self):
-        # Use calibration targets near the screen edges and center to improve mapping
-        xs = [0.02, 0.5, 0.98]
-        ys = [0.02, 0.5, 0.98]
+        xs = np.linspace(0.10, 0.90, 6)
+        ys = np.linspace(0.02, 0.98, 4)
         points = []
         for y_norm in ys:
             for x_norm in xs:
@@ -278,9 +278,7 @@ class IrisRuntime:
                 return
             if desired_mode == 'external' and current_group == 'external':
                 return
-            if desired_mode == 'auto' and current_group == 'external':
-                return
-            if desired_mode == 'auto' and current_group == 'internal' and (now_ts - self.last_webcam_scan_ts) < self.webcam_rescan_interval:
+            if desired_mode == 'auto':
                 return
             self._close_webcam()
         elif not force and (now_ts - self.last_webcam_scan_ts) < self.webcam_rescan_interval:
@@ -423,7 +421,8 @@ class IrisRuntime:
         cy = self.screen_h / 2.0
         scale_x = float(self.settings.get('cursorScaleX', 1.0))
         scale_y = float(self.settings.get('cursorScaleY', 1.0))
-        y_axis_sensitivity = float(self.settings.get('cursorYAxisSensitivity', 2.35))
+        y_axis_sensitivity = float(self.settings.get('cursorYAxisSensitivity', 1.0))
+        y_axis_sensitivity = max(0.9, min(1.15, y_axis_sensitivity))
         gain_left = float(self.settings.get('cursorGainLeft', 0.9))
         gain_right = float(self.settings.get('cursorGainRight', 1.25))
         gain_up = float(self.settings.get('cursorGainUp', 1.5))
@@ -449,8 +448,9 @@ class IrisRuntime:
 
     def _limit_cursor_speed(self, x, y, dt):
         max_speed = float(self.settings.get('maxCursorSpeed', 1600.0))
+        max_speed = max(2800.0, max_speed)
         speed_multiplier = float(self.settings.get('cursorSpeedMultiplier', 0.5))
-        speed_multiplier = max(0.1, min(1.0, speed_multiplier))
+        speed_multiplier = max(0.9, min(1.0, speed_multiplier))
         max_step = (max_speed * speed_multiplier) * max(dt, 1.0 / TARGET_FPS)
 
         dx = x - self.prev_tuned_x
@@ -536,50 +536,58 @@ class IrisRuntime:
     def _calibration_progress(self):
         if not self.calibration_active:
             return 0.0
-        elapsed = time.perf_counter() - self.calibration_started_ts
-        return min(1.0, elapsed / CALIBRATION_POINT_SECONDS)
+        return self.calibration_point_progress
+
+    def _reset_calibration_point(self):
+        self.calibration_point_started_ts = None
+        self.calibration_point_progress = 0.0
+        self.current_point_samples = []
 
     def _start_calibration(self):
         self.calibration_active = True
         self.calibration_index = 0
-        self.calibration_started_ts = time.perf_counter()
-        self.current_point_samples = []
+        self._reset_calibration_point()
         self.calibration_iris_samples = []
         self.calibration_screen_samples = []
         self.calibration_result = None
 
     def _cancel_calibration(self):
         self.calibration_active = False
-        self.current_point_samples = []
+        self._reset_calibration_point()
         self.calibration_result = {'ok': False, 'message': 'Calibration cancelled'}
 
-    def _advance_calibration(self, iris_vector):
+    def _advance_calibration(self, iris_vector, x, y):
         if not self.calibration_active:
             return
 
+        target_x, target_y = self.calibration_targets[self.calibration_index]
+        radius = 60.0
         now = time.perf_counter()
+        distance = float(np.hypot(x - target_x, y - target_y))
+
+        if distance > radius:
+            self._reset_calibration_point()
+            return
+
+        if self.calibration_point_started_ts is None:
+            self.calibration_point_started_ts = now
+
+        elapsed = now - self.calibration_point_started_ts
+        self.calibration_point_progress = min(1.0, elapsed / CALIBRATION_POINT_SECONDS)
         self.current_point_samples.append((now, iris_vector.copy()))
 
-        if now - self.calibration_started_ts < CALIBRATION_POINT_SECONDS:
+        if elapsed < CALIBRATION_POINT_SECONDS:
             return
 
         if self.current_point_samples:
-            settle_time = float(self.settings.get('calibrationSettleTime', 0.45))
-            stable_samples = [
-                sample
-                for sample_ts, sample in self.current_point_samples
-                if (sample_ts - self.calibration_started_ts) >= settle_time
-            ]
-            selected_samples = stable_samples if stable_samples else [s for _, s in self.current_point_samples]
-            avg_sample = np.mean(np.vstack(selected_samples), axis=0)
+            avg_sample = np.mean(np.vstack([sample for _, sample in self.current_point_samples]), axis=0)
         else:
             avg_sample = iris_vector
 
         self.calibration_iris_samples.append(avg_sample)
         self.calibration_screen_samples.append(self.calibration_targets[self.calibration_index])
-        self.current_point_samples = []
         self.calibration_index += 1
-        self.calibration_started_ts = now
+        self._reset_calibration_point()
 
         if self.calibration_index >= len(self.calibration_targets):
             self.calibration_active = False
@@ -834,14 +842,11 @@ class IrisRuntime:
                         await asyncio.sleep(0.01)
                         continue
 
-                    self._advance_calibration(iris_vector)
+                    self._advance_calibration(iris_vector, self.cursor_x, self.cursor_y)
 
                     self.cursor_x, self.cursor_y = self._predict_cursor(iris_vector, dt)
                     if not self.calibration_active:
                         pyautogui.moveTo(self.cursor_x, self.cursor_y, _pause=False)
-                        actual_x, actual_y = pyautogui.position()
-                        self.cursor_x = float(actual_x)
-                        self.cursor_y = float(actual_y)
 
                     if not self.calibration_active:
                         click_event = self._process_dwell(self.cursor_x, self.cursor_y, now_ts)
@@ -858,10 +863,10 @@ class IrisRuntime:
                 else:
                     self.error_message = 'Face not detected. Center your face in the camera frame.'
                     self.dwell.progress = 0.0
+                    if self.calibration_active:
+                        self._reset_calibration_point()
 
             elapsed = time.perf_counter() - frame_start
-            if elapsed > 0:
-                self.fps = 1.0 / elapsed
             self.pipeline_latency_ms = elapsed * 1000.0
 
             payload = {
@@ -891,7 +896,7 @@ class IrisRuntime:
         return {
             'webcamConnected': self.webcam_connected,
             'calibrated': bool(self.calibrator.fitted),
-            'fps': round(self.fps, 1),
+            'fps': 0.0,
             'latencyMs': round(self.pipeline_latency_ms, 2),
             'error': self.error_message,
             'demoMode': bool(self.settings.get('demoMode', False)),

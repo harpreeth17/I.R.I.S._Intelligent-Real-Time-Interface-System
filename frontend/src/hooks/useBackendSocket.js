@@ -11,6 +11,10 @@ export function useBackendSocket(onEvent) {
     let mounted = true;
 
     const connect = () => {
+      if (socketRef.current?.readyState === WebSocket.OPEN || socketRef.current?.readyState === WebSocket.CONNECTING) {
+        return;
+      }
+
       const ws = new WebSocket(WS_URL);
       socketRef.current = ws;
 
@@ -33,7 +37,7 @@ export function useBackendSocket(onEvent) {
       ws.onclose = () => {
         if (!mounted) return;
         setConnected(false);
-        reconnectRef.current = window.setTimeout(connect, 1500);
+        reconnectRef.current = window.setTimeout(connect, 500);
       };
 
       ws.onerror = () => {
@@ -49,6 +53,7 @@ export function useBackendSocket(onEvent) {
         window.clearTimeout(reconnectRef.current);
       }
       if (socketRef.current) {
+        socketRef.current.onclose = null;
         socketRef.current.close();
       }
     };

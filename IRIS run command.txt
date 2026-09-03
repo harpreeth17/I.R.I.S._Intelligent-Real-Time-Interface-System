@@ -2,4 +2,4 @@ cd C:\Users\user\Desktop\Projects\IRIS
 taskkill /F /IM node.exe /IM electron.exe /IM python.exe
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 $env:Path = "C:\Program Files\nodejs;$env:Path"
-npm.cmd run dev
+npm.cmd run dev 

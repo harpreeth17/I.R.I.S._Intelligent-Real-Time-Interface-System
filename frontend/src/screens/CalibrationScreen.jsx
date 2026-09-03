@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import DwellRing from '@/components/DwellRing';
 
-export default function CalibrationScreen({ calibration, send, connected }) {
+export default function CalibrationScreen({ calibration, send, connected, onBack }) {
   const [profileName, setProfileName] = useState('default');
 
   const active = calibration?.active;
@@ -13,10 +13,20 @@ export default function CalibrationScreen({ calibration, send, connected }) {
     <section className="relative h-full overflow-hidden rounded-3xl border border-sky-300/20 bg-[#0b1226] p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-sky-100">9-Point Calibration</h2>
+          <h2 className="text-xl font-semibold text-sky-100">24-Point Calibration</h2>
           <p className="text-sm text-slate-300">Focus on each glowing target for 1.5 seconds to map iris vectors to screen coordinates.</p>
         </div>
         <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (active) send({ type: 'cancel_calibration' });
+              onBack();
+            }}
+            className="min-h-[80px] min-w-[120px] rounded-2xl border border-slate-300/40 bg-slate-400/10 px-4 text-slate-100"
+          >
+            Return to Dashboard
+          </button>
           <button
             type="button"
             onClick={() => send({ type: 'start_calibration' })}

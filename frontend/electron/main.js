@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,6 +11,34 @@ const isDev = !app.isPackaged;
 
 let mainWindow;
 let pythonProcess;
+let calibrationWindowState = null;
+
+function waitForBackend(port, host = '127.0.0.1', timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+
+    const tryConnect = () => {
+      const socket = net.connect(port, host);
+
+      socket.once('connect', () => {
+        socket.end();
+        resolve();
+      });
+
+      socket.once('error', () => {
+        socket.destroy();
+        if (Date.now() >= deadline) {
+          reject(new Error(`Timed out waiting for backend on ${host}:${port}`));
+          return;
+        }
+
+        setTimeout(tryConnect, 250);
+      });
+    };
+
+    tryConnect();
+  });
+}
 
 const appCommands = {
   browser: 'start chrome',
@@ -41,7 +70,8 @@ function startPythonBackend() {
     pythonProcess = spawn(pythonCmd, [backendEntry], {
       cwd: path.resolve(__dirname, '../../backend'),
       stdio: 'inherit',
-      shell: true
+      shell: false,
+      windowsHide: true
     });
   } else {
     const bundledExeCandidates = [
@@ -81,6 +111,7 @@ function createWindow() {
     height: 960,
     minWidth: 1200,
     minHeight: 760,
+    show: false,
     backgroundColor: '#0a0f1e',
     webPreferences: {
       preload: path.resolve(__dirname, 'preload.js'),
@@ -89,10 +120,57 @@ function createWindow() {
     }
   });
 
+  mainWindow.maximize();
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+  });
+
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
   } else {
     mainWindow.loadFile(path.resolve(__dirname, '../dist/index.html'));
+  }
+}
+
+function enterCalibrationFullscreen() {
+  if (!mainWindow || calibrationWindowState) {
+    if (mainWindow) {
+      mainWindow.setFullScreen(true);
+    }
+    return;
+  }
+
+  calibrationWindowState = {
+    bounds: mainWindow.getBounds(),
+    maximized: mainWindow.isMaximized(),
+    fullScreen: mainWindow.isFullScreen()
+  };
+  mainWindow.setFullScreen(true);
+}
+
+function exitCalibrationFullscreen() {
+  if (!mainWindow) {
+    calibrationWindowState = null;
+    return;
+  }
+
+  const previousState = calibrationWindowState;
+  calibrationWindowState = null;
+  mainWindow.setFullScreen(false);
+
+  if (!previousState) {
+    return;
+  }
+
+  if (previousState.maximized) {
+    mainWindow.maximize();
+  } else {
+    mainWindow.restore();
+    mainWindow.setBounds(previousState.bounds);
+  }
+
+  if (previousState.fullScreen) {
+    mainWindow.setFullScreen(true);
   }
 }
 
@@ -114,8 +192,23 @@ ipcMain.handle('launch-app', async (_, appKey) => {
   }
 });
 
-app.whenReady().then(() => {
+ipcMain.handle('calibration-fullscreen', async (_, enabled) => {
+  if (enabled) {
+    enterCalibrationFullscreen();
+  } else {
+    exitCalibrationFullscreen();
+  }
+
+  return { ok: true };
+});
+
+app.whenReady().then(async () => {
   startPythonBackend();
+  try {
+    await waitForBackend(8765);
+  } catch (error) {
+    console.error(error.message);
+  }
   createWindow();
 
   app.on('activate', () => {
