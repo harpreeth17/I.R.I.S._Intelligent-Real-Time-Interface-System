@@ -73,12 +73,12 @@ export default function App() {
       setCursor(payload.cursor || { x: 0, y: 0 });
       setDwellProgress(payload.dwellProgress || 0);
       setStatus((prev) => ({ ...prev, ...(payload.status || {}), fps: rollingFps }));
-      setTelemetry({
-        previewFrame: payload.previewFrame ?? null,
+      setTelemetry((prevTelemetry) => ({
+        previewFrame: payload.previewFrame ?? prevTelemetry.previewFrame,
         rawIris: payload.rawIris ?? null,
         predictedRaw: payload.predictedRaw ?? null,
         ear: payload.ear ?? null,
-      });
+      }));
       if (payload.calibration) {
         setCalibration(payload.calibration);
       }
@@ -171,8 +171,8 @@ export default function App() {
   const displayCursor = useMemo(() => {
     const backendW = Number(status?.screenWidth || window.screen.width);
     const backendH = Number(status?.screenHeight || window.screen.height);
-    const cssW = window.screen.width;
-    const cssH = window.screen.height;
+    const cssW = window.innerWidth;
+    const cssH = window.innerHeight;
 
     return {
       x: (cursor.x / Math.max(1, backendW)) * cssW,
@@ -192,7 +192,7 @@ export default function App() {
   }, [calibration.result, screen]);
 
   return (
-    <div className="h-screen bg-irisBg text-slate-100">
+    <div className="iris-app h-screen text-slate-100">
       {screen !== 'calibration' && <TopBar status={status} connected={connected} modeLabel={modeLabel} />}
       <div className={screen === 'calibration' ? 'h-full' : 'flex h-[calc(100vh-4rem)]'}>
         {screen !== 'calibration' && <Sidebar active={screen} onChange={setScreen} />}

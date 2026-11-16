@@ -23,6 +23,12 @@ if __package__ is None or __package__ == '':
         BLINK_EAR_THRESHOLD,
         BLINK_MIN_DURATION,
         CALIBRATION_POINT_SECONDS,
+        CALIBRATION_SETTLE_SECONDS,
+        CALIBRATION_MIN_SAMPLES,
+        CALIBRATION_VALIDATION_SETTLE_SECONDS,
+        CALIBRATION_VALIDATION_POINT_SECONDS,
+        CALIBRATION_VALIDATION_MIN_SAMPLES,
+        CALIBRATION_PREVIEW_FPS,
         DWELL_COOLDOWN,
         DWELL_DURATION,
         DWELL_RADIUS,
@@ -45,6 +51,12 @@ else:
         BLINK_EAR_THRESHOLD,
         BLINK_MIN_DURATION,
         CALIBRATION_POINT_SECONDS,
+        CALIBRATION_SETTLE_SECONDS,
+        CALIBRATION_MIN_SAMPLES,
+        CALIBRATION_VALIDATION_SETTLE_SECONDS,
+        CALIBRATION_VALIDATION_POINT_SECONDS,
+        CALIBRATION_VALIDATION_MIN_SAMPLES,
+        CALIBRATION_PREVIEW_FPS,
         DWELL_COOLDOWN,
         DWELL_DURATION,
         DWELL_RADIUS,
@@ -108,6 +120,10 @@ class IrisRuntime:
         self.fps = 0.0
         self.pipeline_latency_ms = 0.0
         self.preview_frame = None
+        self.last_preview_ts = 0.0
+        self.preview_encode_ms = 0.0
+        self.broadcast_latency_ms = 0.0
+        self._telemetry_send_tasks = {}
 
         self.cursor_x = self.screen_w / 2
         self.cursor_y = self.screen_h / 2
@@ -123,12 +139,18 @@ class IrisRuntime:
 
         self.calibration_active = False
         self.calibration_targets = self._build_calibration_targets()
+        self.validation_targets = self._build_validation_targets()
+        self.calibration_phase = 'idle'
         self.calibration_index = 0
         self.calibration_point_started_ts = None
+        self.calibration_settle_started_ts = None
         self.calibration_point_progress = 0.0
         self.current_point_samples = []
+        self.current_point_head_samples = []
         self.calibration_iris_samples = []
         self.calibration_screen_samples = []
+        self.calibration_validation_iris = []
+        self.calibration_validation_screen = []
         self.calibration_result = None
 
         self._load_active_profile()
@@ -188,11 +210,22 @@ class IrisRuntime:
             self.settings['demoMode'] = True
 
     def _build_calibration_targets(self):
-        xs = np.linspace(0.10, 0.90, 6)
-        ys = np.linspace(0.02, 0.98, 4)
+        # Keep a small inset so the target remains visible, while covering the
+        # complete usable screen including all four corners.
+        xs = (0.01, 0.25, 0.5, 0.75, 0.99)
+        ys = (0.01, 0.25, 0.5, 0.75, 0.99)
         points = []
         for y_norm in ys:
             for x_norm in xs:
+                points.append((int(x_norm * self.screen_w), int(y_norm * self.screen_h)))
+        return points
+
+    def _build_validation_targets(self):
+        # A short fresh pass covers corners, edges, and the centre without
+        # repeating the full 25-point training duration.
+        points = []
+        for y_norm in (0.01, 0.5, 0.99):
+            for x_norm in (0.01, 0.5, 0.99):
                 points.append((int(x_norm * self.screen_w), int(y_norm * self.screen_h)))
         return points
 
@@ -369,6 +402,24 @@ class IrisRuntime:
 
         return np.array([left_norm_x, left_norm_y, right_norm_x, right_norm_y], dtype=np.float64)
 
+    def _head_pose_vector(self, landmarks):
+        # Face position and scale provide a lightweight stability signal without
+        # adding another MediaPipe model or changing the tracking cadence.
+        face = np.asarray(landmarks, dtype=np.float64)
+        min_x, min_y = np.min(face[:, 0]), np.min(face[:, 1])
+        max_x, max_y = np.max(face[:, 0]), np.max(face[:, 1])
+        width = max(max_x - min_x, 1.0)
+        height = max(max_y - min_y, 1.0)
+        nose = face[1]
+        return np.array(
+            [
+                (nose[0] - min_x) / width,
+                (nose[1] - min_y) / height,
+                width / max(self.screen_w, 1),
+            ],
+            dtype=np.float64,
+        )
+
     def _is_valid_iris_vector(self, iris_vector):
         # Reject extreme outliers that occur when landmarks drift at eye-angle extremes.
         return bool(np.all(iris_vector >= -0.65) and np.all(iris_vector <= 1.65))
@@ -408,7 +459,12 @@ class IrisRuntime:
 
         x = max(0.0, min(float(self.screen_w - 1), float(predicted[0])))
         y = max(0.0, min(float(self.screen_h - 1), float(predicted[1])))
-        tuned_x, tuned_y = self._apply_cursor_tuning(x, y)
+        # A fitted pixel model already covers the full screen. Applying
+        # directional gains after calibration distorts its endpoints.
+        if self.calibrator.fitted:
+            tuned_x, tuned_y = x, y
+        else:
+            tuned_x, tuned_y = self._apply_cursor_tuning(x, y)
         tuned_x, tuned_y = self._limit_cursor_speed(tuned_x, tuned_y, dt)
         smooth_x, smooth_y = self.kalman.step((tuned_x, tuned_y), dt)
 
@@ -525,10 +581,18 @@ class IrisRuntime:
         return None
 
     def _calibration_payload(self):
+        targets = (
+            self.validation_targets
+            if self.calibration_phase == 'validation'
+            else self.calibration_targets
+        )
         return {
             'active': self.calibration_active,
+            'phase': self.calibration_phase,
             'targetIndex': self.calibration_index if self.calibration_active else None,
-            'targets': self.calibration_targets,
+            'targets': targets,
+            'screenWidth': self.screen_w,
+            'screenHeight': self.screen_h,
             'progress': self._calibration_progress(),
             'result': self.calibration_result,
         }
@@ -540,8 +604,10 @@ class IrisRuntime:
 
     def _reset_calibration_point(self):
         self.calibration_point_started_ts = None
+        self.calibration_settle_started_ts = None
         self.calibration_point_progress = 0.0
         self.current_point_samples = []
+        self.current_point_head_samples = []
 
     def _start_calibration(self):
         self.calibration_active = True
@@ -549,60 +615,130 @@ class IrisRuntime:
         self._reset_calibration_point()
         self.calibration_iris_samples = []
         self.calibration_screen_samples = []
+        self.calibration_validation_iris = []
+        self.calibration_validation_screen = []
         self.calibration_result = None
+        self.calibration_phase = 'training'
 
     def _cancel_calibration(self):
         self.calibration_active = False
         self._reset_calibration_point()
+        self.calibration_phase = 'idle'
         self.calibration_result = {'ok': False, 'message': 'Calibration cancelled'}
 
-    def _advance_calibration(self, iris_vector, x, y):
+    def _advance_calibration(self, iris_vector, head_pose):
         if not self.calibration_active:
             return
 
-        target_x, target_y = self.calibration_targets[self.calibration_index]
-        radius = 60.0
         now = time.perf_counter()
-        distance = float(np.hypot(x - target_x, y - target_y))
 
-        if distance > radius:
-            self._reset_calibration_point()
+        if self.calibration_settle_started_ts is None:
+            self.calibration_settle_started_ts = now
+
+        is_validation = self.calibration_phase == 'validation'
+        settle_seconds = (
+            CALIBRATION_VALIDATION_SETTLE_SECONDS
+            if is_validation
+            else CALIBRATION_SETTLE_SECONDS
+        )
+        point_seconds = (
+            CALIBRATION_VALIDATION_POINT_SECONDS
+            if is_validation
+            else CALIBRATION_POINT_SECONDS
+        )
+        minimum_samples = (
+            CALIBRATION_VALIDATION_MIN_SAMPLES
+            if is_validation
+            else CALIBRATION_MIN_SAMPLES
+        )
+
+        settle_elapsed = now - self.calibration_settle_started_ts
+        if settle_elapsed < settle_seconds:
+            self.calibration_point_progress = min(
+                0.35, 0.35 * settle_elapsed / max(settle_seconds, 0.01)
+            )
             return
 
         if self.calibration_point_started_ts is None:
             self.calibration_point_started_ts = now
 
         elapsed = now - self.calibration_point_started_ts
-        self.calibration_point_progress = min(1.0, elapsed / CALIBRATION_POINT_SECONDS)
-        self.current_point_samples.append((now, iris_vector.copy()))
+        self.calibration_point_progress = min(1.0, elapsed / point_seconds)
+        self.current_point_samples.append(iris_vector.copy())
+        self.current_point_head_samples.append(head_pose.copy())
 
-        if elapsed < CALIBRATION_POINT_SECONDS:
+        if elapsed < point_seconds:
             return
 
-        if self.current_point_samples:
-            avg_sample = np.mean(np.vstack([sample for _, sample in self.current_point_samples]), axis=0)
-        else:
-            avg_sample = iris_vector
+        samples = np.asarray(self.current_point_samples, dtype=np.float64)
+        head_samples = np.asarray(self.current_point_head_samples, dtype=np.float64)
+        head_center = np.median(head_samples, axis=0)
+        head_deviation = np.max(np.abs(head_samples - head_center), axis=0)
+        stable_head = bool(np.all(head_deviation <= np.array([0.025, 0.025, 0.08])))
+        accepted = (
+            PolynomialCalibrator.filter_samples(samples, minimum_count=minimum_samples)
+            if stable_head
+            else np.empty((0, 4))
+        )
+        if len(accepted) < minimum_samples:
+            self._reset_calibration_point()
+            return
 
-        self.calibration_iris_samples.append(avg_sample)
-        self.calibration_screen_samples.append(self.calibration_targets[self.calibration_index])
+        targets = self.validation_targets if is_validation else self.calibration_targets
+        target = targets[self.calibration_index]
+        if is_validation:
+            self.calibration_validation_iris.extend(accepted)
+            self.calibration_validation_screen.extend([target] * len(accepted))
+        else:
+            self.calibration_iris_samples.extend(accepted)
+            self.calibration_screen_samples.extend([target] * len(accepted))
         self.calibration_index += 1
         self._reset_calibration_point()
 
-        if self.calibration_index >= len(self.calibration_targets):
-            self.calibration_active = False
-            metrics = self.calibrator.fit(
+        if not is_validation and self.calibration_index >= len(self.calibration_targets):
+            self.calibrator.fit(
                 self.calibration_iris_samples,
                 self.calibration_screen_samples,
             )
+            self.calibration_phase = 'validation'
+            self.calibration_index = 0
+            self._reset_calibration_point()
+            self.calibration_result = None
+            return
+
+        if is_validation and self.calibration_index >= len(self.validation_targets):
+            validation = self.calibrator.validate(
+                self.calibration_validation_iris,
+                self.calibration_validation_screen,
+            )
             max_dim = max(self.screen_w, self.screen_h)
-            accuracy = max(0.0, 100.0 - (metrics['rmse'] / max_dim) * 100.0)
+            validation_rmse = validation['rmse']
+            validation_passed = (
+                validation_rmse is not None and validation_rmse <= max_dim * 0.1
+            )
+            training_rmse = self._training_rmse()
+            self.calibration_active = False
+            self.calibration_phase = 'complete'
             self.calibration_result = {
-                'ok': True,
-                'accuracy': round(float(accuracy), 2),
-                'rmse': round(metrics['rmse'], 2),
-                'samples': metrics['sampleCount'],
+                'ok': bool(validation_passed),
+                'calibrationComplete': True,
+                'validationComplete': True,
+                'validationPassed': bool(validation_passed),
+                'accuracy': round(max(0.0, 100.0 - (training_rmse / max_dim) * 100.0), 2),
+                'rmse': round(training_rmse, 2),
+                'validationRmse': round(float(validation_rmse), 2)
+                if validation_rmse is not None
+                else None,
+                'validationSamples': validation['sampleCount'],
+                'samples': len(self.calibration_iris_samples),
             }
+
+    def _training_rmse(self):
+        predictions = np.asarray(
+            [self.calibrator.predict(sample) for sample in self.calibration_iris_samples]
+        )
+        targets = np.asarray(self.calibration_screen_samples, dtype=np.float64)
+        return float(np.sqrt(np.mean(np.linalg.norm(predictions - targets, axis=1) ** 2)))
 
     def _save_profile(self, name):
         if not self.calibrator.fitted:
@@ -642,20 +778,45 @@ class IrisRuntime:
         if not self.clients:
             return
 
+        started = time.perf_counter()
         encoded = json.dumps(payload)
+        if payload.get('type') == 'telemetry':
+            for ws in list(self.clients):
+                task = self._telemetry_send_tasks.get(ws)
+                if task is not None and not task.done():
+                    continue
+                task = asyncio.create_task(self._send_telemetry(ws, encoded))
+                self._telemetry_send_tasks[ws] = task
+                task.add_done_callback(
+                    lambda completed, client=ws: self._telemetry_send_finished(
+                        client, completed
+                    )
+                )
+            self.broadcast_latency_ms = (time.perf_counter() - started) * 1000.0
+            return
+
         disconnected = []
-        # iterate over a snapshot to avoid concurrent modification from other coroutines
         for ws in list(self.clients):
             try:
                 await ws.send(encoded)
             except Exception:
                 disconnected.append(ws)
+        self.broadcast_latency_ms = (time.perf_counter() - started) * 1000.0
 
         for ws in disconnected:
-            try:
-                self.clients.discard(ws)
-            except Exception:
-                pass
+            self.clients.discard(ws)
+
+    async def _send_telemetry(self, websocket, encoded):
+        try:
+            await websocket.send(encoded)
+        except Exception:
+            self.clients.discard(websocket)
+
+    def _telemetry_send_finished(self, websocket, task):
+        if self._telemetry_send_tasks.get(websocket) is task:
+            self._telemetry_send_tasks.pop(websocket, None)
+        if not task.cancelled():
+            task.exception()
 
     async def _handle_message(self, data):
         msg_type = data.get('type')
@@ -769,6 +930,7 @@ class IrisRuntime:
             click_event = None
             ear_value = 1.0
             face_found = False
+            preview_payload = None
 
             if self.settings.get('demoMode', False):
                 mx, my = pyautogui.position()
@@ -818,7 +980,12 @@ class IrisRuntime:
                     continue
 
                 self.webcam_connected = True
-                self.preview_frame = self._encode_preview_frame(frame)
+                if now_ts - self.last_preview_ts >= 1.0 / CALIBRATION_PREVIEW_FPS:
+                    preview_started = time.perf_counter()
+                    self.preview_frame = self._encode_preview_frame(frame)
+                    self.preview_encode_ms = (time.perf_counter() - preview_started) * 1000.0
+                    self.last_preview_ts = now_ts
+                    preview_payload = self.preview_frame
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 landmarks = None
                 if self.mediapipe_mode == 'legacy' and self.face_mesh is not None:
@@ -842,7 +1009,7 @@ class IrisRuntime:
                         await asyncio.sleep(0.01)
                         continue
 
-                    self._advance_calibration(iris_vector, self.cursor_x, self.cursor_y)
+                    self._advance_calibration(iris_vector, self._head_pose_vector(landmarks))
 
                     self.cursor_x, self.cursor_y = self._predict_cursor(iris_vector, dt)
                     if not self.calibration_active:
@@ -874,7 +1041,7 @@ class IrisRuntime:
                 'cursor': {'x': self.cursor_x, 'y': self.cursor_y},
                 'dwellProgress': self.dwell.progress,
                 'clickEvent': click_event,
-                'previewFrame': self.preview_frame,
+                'previewFrame': preview_payload,
                 'rawIris': None,
                 'predictedRaw': self.last_predicted_raw,
                 'ear': round(float(ear_value), 4),
@@ -898,6 +1065,8 @@ class IrisRuntime:
             'calibrated': bool(self.calibrator.fitted),
             'fps': 0.0,
             'latencyMs': round(self.pipeline_latency_ms, 2),
+            'previewEncodeMs': round(self.preview_encode_ms, 2),
+            'broadcastScheduleMs': round(self.broadcast_latency_ms, 2),
             'error': self.error_message,
             'demoMode': bool(self.settings.get('demoMode', False)),
             'faceFound': face_found,

@@ -2,11 +2,37 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
+const net = require('node:net');
 
 const isDev = !app.isPackaged;
 
 let mainWindow;
 let pythonProcess;
+let calibrationWindowState = null;
+
+function waitForBackend(port, host = '127.0.0.1', timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+
+    const tryConnect = () => {
+      const socket = net.connect(port, host);
+      socket.once('connect', () => {
+        socket.end();
+        resolve();
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        if (Date.now() >= deadline) {
+          reject(new Error(`Timed out waiting for backend on ${host}:${port}`));
+        } else {
+          setTimeout(tryConnect, 250);
+        }
+      });
+    };
+
+    tryConnect();
+  });
+}
 
 const appCommands = {
   browser: 'start chrome',
@@ -38,7 +64,8 @@ function startPythonBackend() {
     pythonProcess = spawn(pythonCmd, [backendEntry], {
       cwd: path.resolve(__dirname, '../../backend'),
       stdio: 'inherit',
-      shell: true
+      shell: false,
+      windowsHide: true
     });
   } else {
     const bundledExeCandidates = [
@@ -70,6 +97,33 @@ function stopPythonBackend() {
   if (pythonProcess && !pythonProcess.killed) {
     pythonProcess.kill();
   }
+}
+
+function enterCalibrationFullscreen() {
+  if (!mainWindow) return;
+  if (!calibrationWindowState) {
+    calibrationWindowState = {
+      bounds: mainWindow.getBounds(),
+      maximized: mainWindow.isMaximized(),
+      fullScreen: mainWindow.isFullScreen()
+    };
+  }
+  mainWindow.setFullScreen(true);
+}
+
+function exitCalibrationFullscreen() {
+  if (!mainWindow) return;
+  const previousState = calibrationWindowState;
+  calibrationWindowState = null;
+  mainWindow.setFullScreen(false);
+  if (!previousState) return;
+  if (previousState.maximized) {
+    mainWindow.maximize();
+  } else {
+    mainWindow.restore();
+    mainWindow.setBounds(previousState.bounds);
+  }
+  if (previousState.fullScreen) mainWindow.setFullScreen(true);
 }
 
 function createWindow() {
@@ -111,8 +165,19 @@ ipcMain.handle('launch-app', async (_, appKey) => {
   }
 });
 
-app.whenReady().then(() => {
+ipcMain.handle('calibration-fullscreen', async (_, enabled) => {
+  if (enabled) enterCalibrationFullscreen();
+  else exitCalibrationFullscreen();
+  return { ok: true };
+});
+
+app.whenReady().then(async () => {
   startPythonBackend();
+  try {
+    await waitForBackend(8765);
+  } catch (error) {
+    console.error(error.message);
+  }
   createWindow();
 
   app.on('activate', () => {
