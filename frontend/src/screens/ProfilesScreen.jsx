@@ -73,6 +73,7 @@ export default function ProfilesScreen({
   const [pendingAction, setPendingAction] = useState(null);
   const pendingRequestRef = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
   const items = useMemo(
     () => (profileDetails.length ? profileDetails : profiles.map((name) => ({ name, calibrated: false }))),
@@ -86,10 +87,14 @@ export default function ProfilesScreen({
       setFieldErrors({});
       setPendingAction(null);
       pendingRequestRef.current = false;
-      if (pendingAction === 'create') setForm(EMPTY_FORM);
+      if (pendingAction === 'create') {
+        setForm(EMPTY_FORM);
+        setShowCreateForm(false);
+      }
       if (pendingAction === 'update') {
         setEditingName(null);
         setForm(EMPTY_FORM);
+        setShowCreateForm(false);
       }
     } else {
       setLocalError(feedback.error || 'Profile operation failed');
@@ -153,6 +158,15 @@ export default function ProfilesScreen({
   const beginEdit = (profile) => {
     setEditingName(profile.name);
     setForm(cloneForm(profile));
+    setShowCreateForm(true);
+    setLocalError(null);
+    setFieldErrors({});
+  };
+
+  const beginCreate = () => {
+    setEditingName(null);
+    setForm(EMPTY_FORM);
+    setShowCreateForm(true);
     setLocalError(null);
     setFieldErrors({});
   };
@@ -193,11 +207,51 @@ export default function ProfilesScreen({
         </p>
       </header>
 
-      <div className="rounded-2xl border border-sky-300/20 bg-[#0b1226] p-4">
+      {items.length === 0 ? (
+        <div className="order-1 flex min-h-[140px] items-center justify-center rounded-2xl border border-dashed border-sky-300/25 bg-[#0b1226] p-5 text-center text-base text-slate-400">
+          No saved profiles yet. Create a profile, then complete calibration separately.
+        </div>
+      ) : (
+        <div className="order-1 grid grid-cols-1 gap-3 xl:grid-cols-2">
+          {items.map((profile) => {
+            const isActive = profile.name === activeProfile;
+            const calibration = profile.calibration || {};
+            return (
+              <article key={profile.name} className={`rounded-2xl border p-3 ${isActive ? 'border-teal-300/45 bg-teal-300/10' : 'border-sky-300/20 bg-[#0b1226]'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="break-words text-xl font-semibold text-slate-100">{profile.personal?.preferredName || profile.personal?.fullName || profile.name}</h3>
+                    <p className="text-base text-slate-300">{profile.name}</p>
+                    <p className={`mt-1 text-sm ${profile.calibrated ? 'text-teal-200' : 'text-amber-200'}`}>{calibration.status || (profile.calibrated ? 'Validated' : 'Uncalibrated')}</p>
+                    {calibration.lastCalibratedAt && <p className="text-sm text-slate-400">Calibration date: {new Date(calibration.lastCalibratedAt * 1000).toLocaleDateString()}</p>}
+                    {calibration.screenWidth && <p className="text-sm text-slate-400">Calibration screen: {calibration.screenWidth} × {calibration.screenHeight}</p>}
+                  </div>
+                  {isActive && <span className="shrink-0 rounded-full border border-teal-300/40 bg-teal-300/15 px-3 py-1 text-sm text-teal-100">Active</span>}
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <button type="button" disabled={isActive || Boolean(pendingAction)} onClick={() => sendProfile({ type: 'load_profile', name: profile.name }, 'load')} className="min-h-[48px] rounded-xl border border-cyan-300/30 bg-cyan-300/10 px-2 text-sm text-cyan-100 disabled:opacity-50">{isActive ? 'Loaded' : 'Select'}</button>
+                  <button type="button" onClick={() => beginEdit(profile)} className="min-h-[48px] rounded-xl border border-sky-300/25 bg-sky-300/5 px-2 text-sm text-slate-200">Edit</button>
+                  <button type="button" disabled={isActive || Boolean(pendingAction)} onClick={() => deleteProfile(profile)} title={isActive ? 'The active profile cannot be deleted. Select another profile first.' : 'Delete this profile and its associated calibration data.'} aria-label={isActive ? `Delete ${profile.name} unavailable because it is active` : `Delete ${profile.name}`} className="min-h-[48px] rounded-xl border border-rose-300/30 bg-rose-400/10 px-2 text-sm text-rose-100 disabled:cursor-not-allowed disabled:opacity-50">{isActive ? 'Delete (active)' : 'Delete'}</button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="order-2 flex justify-start">
+        {!showCreateForm && (
+          <button type="button" onClick={beginCreate} className="min-h-[52px] rounded-xl border border-cyan-300/40 bg-cyan-300/15 px-5 text-base text-cyan-100">
+            Create New Profile
+          </button>
+        )}
+      </div>
+
+      {showCreateForm && <div className="order-3 rounded-2xl border border-sky-300/20 bg-[#0b1226] p-4">
         <div className="mb-4 flex items-center justify-between gap-3">
           <h3 className="text-xl font-semibold text-slate-100">{formTitle}</h3>
           {editingName && (
-            <button type="button" onClick={() => { setEditingName(null); setForm(EMPTY_FORM); }} className="min-h-[48px] rounded-xl border border-slate-300/25 px-4 text-slate-200">
+            <button type="button" onClick={() => { setEditingName(null); setForm(EMPTY_FORM); setShowCreateForm(false); }} className="min-h-[48px] rounded-xl border border-slate-300/25 px-4 text-slate-200">
               Cancel edit
             </button>
           )}
@@ -277,39 +331,7 @@ export default function ProfilesScreen({
         <button type="button" onClick={submit} disabled={Boolean(pendingAction)} className="mt-4 min-h-[56px] rounded-xl border border-cyan-300/40 bg-cyan-300/15 px-5 text-base text-cyan-100 disabled:opacity-50">
           {pendingAction ? 'Saving...' : editingName ? 'Save profile details' : 'Create profile'}
         </button>
-      </div>
-
-      {items.length === 0 ? (
-        <div className="flex min-h-[160px] items-center justify-center rounded-2xl border border-dashed border-sky-300/25 bg-[#0b1226] p-6 text-center text-base text-slate-400">
-          No saved profiles yet. Create a profile, then complete calibration separately.
-        </div>
-      ) : (
-        <div className="grid min-h-0 grid-cols-1 gap-4 overflow-auto xl:grid-cols-2">
-          {items.map((profile) => {
-            const isActive = profile.name === activeProfile;
-            const calibration = profile.calibration || {};
-            return (
-              <article key={profile.name} className={`rounded-2xl border p-4 ${isActive ? 'border-teal-300/45 bg-teal-300/10' : 'border-sky-300/20 bg-[#0b1226]'}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="break-words text-xl font-semibold text-slate-100">{profile.personal?.preferredName || profile.personal?.fullName || profile.name}</h3>
-                    <p className="text-base text-slate-300">{profile.name}</p>
-                    <p className={`mt-1 text-sm ${profile.calibrated ? 'text-teal-200' : 'text-amber-200'}`}>{calibration.status || (profile.calibrated ? 'Validated' : 'Uncalibrated')}</p>
-                    {calibration.lastCalibratedAt && <p className="text-sm text-slate-400">Calibration date: {new Date(calibration.lastCalibratedAt * 1000).toLocaleDateString()}</p>}
-                    {calibration.screenWidth && <p className="text-sm text-slate-400">Calibration screen: {calibration.screenWidth} × {calibration.screenHeight}</p>}
-                  </div>
-                  {isActive && <span className="shrink-0 rounded-full border border-teal-300/40 bg-teal-300/15 px-3 py-1 text-sm text-teal-100">Active</span>}
-                </div>
-                <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <button type="button" disabled={isActive || Boolean(pendingAction)} onClick={() => sendProfile({ type: 'load_profile', name: profile.name }, 'load')} className="min-h-[52px] rounded-xl border border-cyan-300/30 bg-cyan-300/10 px-3 text-sm text-cyan-100 disabled:opacity-50">{isActive ? 'Loaded' : 'Select'}</button>
-                  <button type="button" onClick={() => beginEdit(profile)} className="min-h-[52px] rounded-xl border border-sky-300/25 bg-sky-300/5 px-3 text-sm text-slate-200">Edit</button>
-                  <button type="button" disabled={isActive || Boolean(pendingAction)} onClick={() => deleteProfile(profile)} title={isActive ? 'The active profile cannot be deleted. Select another profile first.' : 'Delete this profile and its associated calibration data.'} aria-label={isActive ? `Delete ${profile.name} unavailable because it is active` : `Delete ${profile.name}`} className="min-h-[52px] rounded-xl border border-rose-300/30 bg-rose-400/10 px-3 text-sm text-rose-100 disabled:cursor-not-allowed disabled:opacity-50">{isActive ? 'Delete (active)' : 'Delete'}</button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
+      </div>}
 
       {deleteTarget && (
         <div
