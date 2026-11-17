@@ -7,6 +7,7 @@ import AppLauncherScreen from '@/screens/AppLauncherScreen';
 import CalibrationScreen from '@/screens/CalibrationScreen';
 import DashboardScreen from '@/screens/DashboardScreen';
 import GazeKeyboardScreen from '@/screens/GazeKeyboardScreen';
+import ProfilesScreen from '@/screens/ProfilesScreen';
 import SettingsScreen from '@/screens/SettingsScreen';
 
 const defaultStatus = {
@@ -48,8 +49,23 @@ const defaultSettings = {
   cursorOffsetY: 0,
   calibrationSettleTime: 0.45,
   webcamMode: 'auto',
+  keyboardSize: 'large',
+  interfaceFontSize: 'large',
+  displayContrast: 'standard',
+  textDisplay: 'large',
+  preferredTheme: 'dark',
   demoMode: false,
 };
+
+function mergeSettings(previous, incoming) {
+  const next = { ...previous, ...incoming };
+  const fontSize = incoming.interfaceFontSize || incoming.textDisplay || previous.interfaceFontSize || 'large';
+  return {
+    ...next,
+    interfaceFontSize: fontSize,
+    textDisplay: fontSize,
+  };
+}
 
 export default function App() {
   const [screen, setScreen] = useState('dashboard');
@@ -58,6 +74,8 @@ export default function App() {
   const [status, setStatus] = useState(defaultStatus);
   const [settings, setSettings] = useState(defaultSettings);
   const [profiles, setProfiles] = useState([]);
+  const [profileDetails, setProfileDetails] = useState([]);
+  const [profileFeedback, setProfileFeedback] = useState(null);
   const [activeProfile, setActiveProfile] = useState(null);
   const [calibration, setCalibration] = useState({ active: false, targets: [], progress: 0, result: null });
   const [telemetry, setTelemetry] = useState({ previewFrame: null, rawIris: null, predictedRaw: null, ear: null });
@@ -85,19 +103,23 @@ export default function App() {
     }
 
     if (payload.type === 'hello' || payload.type === 'state') {
-      if (payload.settings) setSettings((prev) => ({ ...prev, ...payload.settings }));
+      if (payload.settings) setSettings((prev) => mergeSettings(prev, payload.settings));
       if (payload.profiles) setProfiles(payload.profiles);
+      if (payload.profileDetails) setProfileDetails(payload.profileDetails);
       if (payload.activeProfile !== undefined) setActiveProfile(payload.activeProfile);
       if (payload.calibration) setCalibration(payload.calibration);
     }
 
     if (payload.type === 'settings') {
-      setSettings((prev) => ({ ...prev, ...payload.settings }));
+      setSettings((prev) => mergeSettings(prev, payload.settings));
     }
 
     if (payload.type === 'profiles') {
       if (payload.profiles) setProfiles(payload.profiles);
+      if (payload.profileDetails) setProfileDetails(payload.profileDetails);
       if (payload.activeProfile !== undefined) setActiveProfile(payload.activeProfile);
+      if (payload.settings) setSettings((prev) => mergeSettings(prev, payload.settings));
+      if (payload.result) setProfileFeedback(payload.result);
     }
 
     if (payload.type === 'calibration_state') {
@@ -115,6 +137,8 @@ export default function App() {
         return 'Typing';
       case 'launcher':
         return 'Launcher';
+      case 'profiles':
+        return 'Profiles';
       case 'settings':
         return 'Settings';
       default:
@@ -123,9 +147,14 @@ export default function App() {
   }, [screen]);
 
   const onSettingsChange = (patch) => {
-    const next = { ...settings, ...patch };
-    setSettings(next);
-    send({ type: 'update_settings', settings: patch });
+    const normalizedPatch = { ...patch };
+    const fontSize = patch.interfaceFontSize || patch.textDisplay;
+    if (fontSize) {
+      normalizedPatch.interfaceFontSize = fontSize;
+      normalizedPatch.textDisplay = fontSize;
+    }
+    setSettings((previous) => mergeSettings(previous, normalizedPatch));
+    send({ type: 'update_settings', settings: normalizedPatch });
   };
 
   const currentScreen = (() => {
@@ -144,6 +173,7 @@ export default function App() {
         <GazeKeyboardScreen
           dwellDuration={settings.uiDwellDuration ?? settings.dwellDuration}
           repeatCooldown={settings.uiRepeatCooldown ?? 1.1}
+          keyboardSize={settings.keyboardSize ?? 'large'}
           text={keyboardText}
           setText={setKeyboardText}
         />
@@ -151,6 +181,19 @@ export default function App() {
     }
     if (screen === 'launcher') {
       return <AppLauncherScreen settings={settings} />;
+    }
+    if (screen === 'profiles') {
+      return (
+        <ProfilesScreen
+          profiles={profiles}
+          profileDetails={profileDetails}
+          activeProfile={activeProfile}
+          feedback={profileFeedback}
+          connected={connected}
+          clearFeedback={() => setProfileFeedback(null)}
+          send={send}
+        />
+      );
     }
     if (screen === 'settings') {
       return (
@@ -160,12 +203,21 @@ export default function App() {
           profiles={profiles}
           activeProfile={activeProfile}
           onLoadProfile={(name) => send({ type: 'load_profile', name })}
+          onNavigate={setScreen}
           send={send}
         />
       );
     }
 
-    return <DashboardScreen cursor={cursor} status={status} dwellProgress={dwellProgress} telemetry={telemetry} />;
+    return (
+      <DashboardScreen
+        cursor={cursor}
+        status={status}
+        dwellProgress={dwellProgress}
+        telemetry={telemetry}
+        calibration={calibration}
+      />
+    );
   })();
 
   const displayCursor = useMemo(() => {
@@ -181,6 +233,16 @@ export default function App() {
   }, [cursor, status]);
 
   useEffect(() => {
+    document.documentElement.dataset.irisInterfaceFontSize = settings.interfaceFontSize || 'large';
+    document.documentElement.dataset.irisTheme = settings.preferredTheme === 'light' ? 'light' : 'dark';
+
+    return () => {
+      delete document.documentElement.dataset.irisInterfaceFontSize;
+      delete document.documentElement.dataset.irisTheme;
+    };
+  }, [settings.interfaceFontSize, settings.preferredTheme]);
+
+  useEffect(() => {
     const shouldFullscreen = screen === 'calibration' && !calibration.result;
     window.irisAPI?.setCalibrationFullscreen?.(shouldFullscreen);
 
@@ -192,7 +254,7 @@ export default function App() {
   }, [calibration.result, screen]);
 
   return (
-    <div className="iris-app h-screen text-slate-100">
+    <div className={`iris-app h-screen text-slate-100 ${settings.displayContrast === 'high' ? 'iris-high-contrast' : ''}`}>
       {screen !== 'calibration' && <TopBar status={status} connected={connected} modeLabel={modeLabel} />}
       <div className={screen === 'calibration' ? 'h-full' : 'flex h-[calc(100vh-4rem)]'}>
         {screen !== 'calibration' && <Sidebar active={screen} onChange={setScreen} />}

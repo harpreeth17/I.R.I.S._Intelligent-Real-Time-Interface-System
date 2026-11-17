@@ -1,9 +1,15 @@
+import { getCameraStatus } from '@/components/CameraStatus';
+
 export default function TopBar({ status, connected, modeLabel }) {
+  const camera = getCameraStatus(status);
   const healthItems = [
     {
       label: 'Webcam',
-      value: status?.demoMode ? 'Demo' : status?.webcamConnected ? 'Connected' : 'Offline',
-      good: status?.demoMode || status?.webcamConnected,
+      value: camera.label,
+      good:
+        status?.cameraStatus === 'connected' ||
+        (!status?.cameraStatus && status?.webcamConnected) ||
+        (status?.demoMode && status?.cameraStatus !== 'mediapipe_error'),
     },
     {
       label: 'Calibration',
@@ -30,15 +36,15 @@ export default function TopBar({ status, connected, modeLabel }) {
   return (
     <header className="flex h-16 items-center justify-between border-b border-sky-300/20 bg-[#0d172d]/90 px-6 backdrop-blur">
       <div>
-        <h1 className="text-lg font-semibold tracking-wide text-sky-100">I.R.I.S</h1>
-        <p className="text-xs text-slate-300">Intelligent Responsive Interface System</p>
+        <h1 className="iris-section-heading font-semibold tracking-wide text-sky-100">I.R.I.S</h1>
+        <p className="iris-supporting text-slate-300">Intelligent Responsive Interface System</p>
       </div>
 
       <div className="flex items-center gap-3">
         {healthItems.map((item) => (
           <div
             key={item.label}
-            className={`rounded-xl border px-3 py-1 text-xs ${
+            className={`iris-status rounded-xl border px-3 py-1 ${
               item.good
                 ? 'border-teal-300/30 bg-teal-300/10 text-teal-100'
                 : 'border-rose-300/30 bg-rose-300/10 text-rose-100'
@@ -48,7 +54,7 @@ export default function TopBar({ status, connected, modeLabel }) {
             <span>{item.value}</span>
           </div>
         ))}
-        <div className="rounded-xl border border-sky-300/30 bg-sky-300/10 px-3 py-1 text-xs text-sky-100">
+        <div className="iris-status rounded-xl border border-sky-300/30 bg-sky-300/10 px-3 py-1 text-sky-100">
           Mode: {modeLabel}
         </div>
       </div>

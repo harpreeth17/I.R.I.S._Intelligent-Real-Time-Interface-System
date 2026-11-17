@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, screen, ipcMain, session } = require('electron');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -127,6 +127,17 @@ function exitCalibrationFullscreen() {
 }
 
 function createWindow() {
+  Menu.setApplicationMenu(null);
+  const isTrustedAppUrl = (url) =>
+    url.startsWith('http://localhost:5173') || url.startsWith('file://');
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    const mediaPermission = permission === 'media' || permission === 'microphone';
+    callback(mediaPermission && isTrustedAppUrl(webContents.getURL()));
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+    const mediaPermission = permission === 'media' || permission === 'microphone';
+    return mediaPermission && isTrustedAppUrl(webContents.getURL());
+  });
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 960,
@@ -169,6 +180,15 @@ ipcMain.handle('calibration-fullscreen', async (_, enabled) => {
   if (enabled) enterCalibrationFullscreen();
   else exitCalibrationFullscreen();
   return { ok: true };
+});
+
+ipcMain.handle('display-metrics', () => {
+  const display = screen.getPrimaryDisplay();
+  return {
+    scaleFactor: display.scaleFactor,
+    bounds: display.bounds,
+    workArea: display.workArea
+  };
 });
 
 app.whenReady().then(async () => {

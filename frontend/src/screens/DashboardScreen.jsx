@@ -1,6 +1,8 @@
 import DwellRing from '@/components/DwellRing';
+import CameraStatus from '@/components/CameraStatus';
+import CalibrationQuality from '@/components/CalibrationQuality';
 
-export default function DashboardScreen({ cursor, status, dwellProgress, telemetry }) {
+export default function DashboardScreen({ cursor, status, dwellProgress, telemetry, calibration }) {
   const previewWidth = 420;
   const previewHeight = 240;
   const screenW = status?.screenWidth || window.screen.width;
@@ -11,8 +13,8 @@ export default function DashboardScreen({ cursor, status, dwellProgress, telemet
   return (
     <section className="grid h-full grid-cols-1 gap-6 xl:grid-cols-[1.4fr_1fr]">
       <div className="rounded-3xl border border-sky-300/20 bg-[#111b33] p-6 shadow-xl">
-        <h2 className="text-xl font-semibold text-sky-100">Webcam Preview</h2>
-        <p className="mb-6 text-sm text-slate-300">Live feed from the connected webcam with gaze telemetry beneath it.</p>
+        <h2 className="iris-heading font-semibold text-sky-100">Webcam Preview</h2>
+        <p className="mb-6 text-base text-slate-300">Live feed from the connected webcam with gaze telemetry beneath it.</p>
 
         <div
           className="relative overflow-hidden rounded-2xl border border-sky-300/20 bg-gradient-to-br from-[#0f1b36] to-[#0b1226]"
@@ -25,8 +27,9 @@ export default function DashboardScreen({ cursor, status, dwellProgress, telemet
               className="h-full w-full object-cover"
             />
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              Waiting for webcam frames...
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-slate-400">
+              <CameraStatus status={status} compact />
+              <span>{status?.cameraRecoveryHint || 'Waiting for webcam frames...'}</span>
             </div>
           )}
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(7,12,24,0.08),rgba(7,12,24,0.42))]" />
@@ -52,10 +55,10 @@ export default function DashboardScreen({ cursor, status, dwellProgress, telemet
 
       <div className="space-y-6">
         <div className="rounded-3xl border border-sky-300/20 bg-[#111b33] p-6">
-          <h3 className="mb-4 text-lg text-sky-100">System Status</h3>
+          <h3 className="iris-section-heading mb-4 text-sky-100">System Status</h3>
           <div className="space-y-3 text-sm">
-            <p className="text-slate-300">Webcam: {status?.webcamConnected ? 'Connected' : status?.demoMode ? 'Demo mode' : 'Offline'}</p>
-            <p className="text-slate-300">Calibration: {status?.calibrated ? 'Calibrated' : 'Needs calibration'}</p>
+            <CameraStatus status={status} />
+            <CalibrationQuality calibration={calibration} calibrated={status?.calibrated} />
             <p className="text-slate-300">FPS: {status?.fps ?? 0}</p>
             <p className="text-slate-300">Latency: {status?.latencyMs ?? 0} ms</p>
             <p className="text-slate-300">Profile: {status?.activeProfile ?? 'None'}</p>
@@ -63,7 +66,7 @@ export default function DashboardScreen({ cursor, status, dwellProgress, telemet
         </div>
 
         <div className="rounded-3xl border border-sky-300/20 bg-[#111b33] p-6">
-          <h3 className="mb-4 text-lg text-sky-100">Dwell Click Progress</h3>
+          <h3 className="iris-section-heading mb-4 text-sky-100">Dwell Click Progress</h3>
           <div className="flex items-center gap-4">
             <DwellRing progress={dwellProgress} size={92} stroke={8} />
             <p className="text-sm text-slate-300">The ring fills when gaze remains stable inside the configured dwell radius.</p>
@@ -72,7 +75,8 @@ export default function DashboardScreen({ cursor, status, dwellProgress, telemet
 
         {status?.error && (
           <div className="rounded-2xl border border-rose-300/30 bg-rose-400/10 p-4 text-sm text-rose-100">
-            {status.error}
+            <p>{status.error}</p>
+            {status?.cameraRecoveryHint && <p className="mt-2 text-rose-100/80">{status.cameraRecoveryHint}</p>}
           </div>
         )}
       </div>

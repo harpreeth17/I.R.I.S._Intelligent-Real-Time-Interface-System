@@ -1,11 +1,11 @@
-export default function SettingsScreen({ settings, onSettingsChange, profiles, activeProfile, onLoadProfile, send }) {
+export default function SettingsScreen({ settings, onSettingsChange, profiles, activeProfile, onLoadProfile, onNavigate, send }) {
   const update = (patch) => onSettingsChange(patch);
 
   return (
     <section className="space-y-5 rounded-3xl border border-sky-300/20 bg-[#101a31] p-6">
       <div>
-        <h2 className="text-xl font-semibold text-sky-100">Settings</h2>
-        <p className="text-sm text-slate-300">Tune selection speed, blink sensitivity, cursor behavior, and profile preferences.</p>
+        <h2 className="iris-heading font-semibold text-sky-100">Settings</h2>
+        <p className="text-base text-slate-300">Tune selection speed, blink sensitivity, cursor behavior, and profile preferences.</p>
       </div>
 
       <div className="grid grid-cols-2 gap-4 rounded-2xl border border-sky-300/20 bg-[#0b1226] p-4">
@@ -88,6 +88,20 @@ export default function SettingsScreen({ settings, onSettingsChange, profiles, a
           />
         </label>
 
+        <label className="text-sm text-slate-200">
+          Keyboard size
+          <select
+            value={settings.keyboardSize || 'large'}
+            onChange={(e) => update({ keyboardSize: e.target.value })}
+            className="mt-2 w-full rounded-xl border border-sky-300/20 bg-[#0f1930] px-3 py-2 text-slate-100"
+          >
+            <option value="small">Small</option>
+            <option value="medium">Medium</option>
+            <option value="large">Large</option>
+          </select>
+          <p className="mt-2 text-xs text-slate-400">Larger keys are easier to target with gaze dwell.</p>
+        </label>
+
         <label className="flex items-center gap-2 text-sm text-slate-200">
           <input
             type="checkbox"
@@ -99,6 +113,57 @@ export default function SettingsScreen({ settings, onSettingsChange, profiles, a
           />
           Demo mode (mouse simulation)
         </label>
+      </div>
+
+      <div className="rounded-2xl border border-sky-300/20 bg-[#0b1226] p-4">
+        <h3 className="iris-section-heading mb-1 text-sky-100">Display &amp; Readability</h3>
+        <p className="mb-4 text-sm text-slate-300">Choose one global interface text size. This setting is also the profile text-scaling preference.</p>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <label className="text-sm text-slate-200">
+            Interface Font Size
+            <select
+              value={settings.interfaceFontSize || settings.textDisplay || 'large'}
+              onChange={(e) => update({ interfaceFontSize: e.target.value })}
+              className="mt-2 w-full rounded-xl border border-sky-300/20 bg-[#0f1930] px-3 py-2 text-slate-100"
+            >
+              <option value="small">Small (15px)</option>
+              <option value="standard">Standard (17px)</option>
+              <option value="large">Large (19px)</option>
+              <option value="extra_large">Extra Large (21px)</option>
+            </select>
+          </label>
+
+          <label className="text-sm text-slate-200">
+            Display contrast
+            <select
+              value={settings.displayContrast || 'standard'}
+              onChange={(e) => update({ displayContrast: e.target.value })}
+              className="mt-2 w-full rounded-xl border border-sky-300/20 bg-[#0f1930] px-3 py-2 text-slate-100"
+            >
+              <option value="standard">Standard</option>
+              <option value="high">High Contrast</option>
+            </select>
+          </label>
+
+          <label className="text-sm text-slate-200">
+            Preferred theme
+            <select
+              value={settings.preferredTheme || 'dark'}
+              onChange={(e) => update({ preferredTheme: e.target.value })}
+              className="mt-2 w-full rounded-xl border border-sky-300/20 bg-[#0f1930] px-3 py-2 text-slate-100"
+            >
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+        </div>
+        <button
+          type="button"
+          onClick={() => onNavigate?.('profiles')}
+          className="mt-4 min-h-[52px] rounded-xl border border-cyan-300/35 bg-cyan-300/10 px-4 text-base text-cyan-100 transition hover:bg-cyan-300/20"
+        >
+          Manage User Profiles
+        </button>
       </div>
 
       <div className="grid grid-cols-2 gap-4 rounded-2xl border border-sky-300/20 bg-[#0b1226] p-4">

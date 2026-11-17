@@ -10,6 +10,9 @@ class PolynomialCalibrator:
         self.model_x = LinearRegression()
         self.model_y = LinearRegression()
         self.fitted = False
+        self.validated = False
+        self.training_iris_samples = np.empty((0, 0), dtype=np.float64)
+        self.training_screen_points = np.empty((0, 0), dtype=np.float64)
 
     @staticmethod
     def filter_samples(samples, minimum_count: int = 8):
@@ -58,6 +61,9 @@ class PolynomialCalibrator:
             )
             error = np.linalg.norm(pred - y, axis=1)
         self.fitted = True
+        self.validated = False
+        self.training_iris_samples = X.copy()
+        self.training_screen_points = y.copy()
         rmse = float(np.sqrt(np.mean(error**2)))
         return {
             'rmse': rmse,
@@ -93,6 +99,9 @@ class PolynomialCalibrator:
             'model_x': self.model_x,
             'model_y': self.model_y,
             'fitted': self.fitted,
+            'validated': self.validated,
+            'training_iris_samples': self.training_iris_samples,
+            'training_screen_points': self.training_screen_points,
         }
 
     @classmethod
@@ -102,4 +111,13 @@ class PolynomialCalibrator:
         inst.model_x = data['model_x']
         inst.model_y = data['model_y']
         inst.fitted = data.get('fitted', True)
+        inst.validated = data.get('validated', True)
+        inst.training_iris_samples = np.asarray(
+            data.get('training_iris_samples', np.empty((0, 0))),
+            dtype=np.float64,
+        )
+        inst.training_screen_points = np.asarray(
+            data.get('training_screen_points', np.empty((0, 0))),
+            dtype=np.float64,
+        )
         return inst

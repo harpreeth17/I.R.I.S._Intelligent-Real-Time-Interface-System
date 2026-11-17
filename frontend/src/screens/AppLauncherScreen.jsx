@@ -25,8 +25,8 @@ export default function AppLauncherScreen({ settings }) {
     <section className="h-full rounded-3xl border border-sky-300/20 bg-[#101a31] p-6">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-sky-100">App Launcher</h2>
-          <p className="text-sm text-slate-300">Dwell on an icon for 1.5s to open an application.</p>
+          <h2 className="iris-heading font-semibold text-sky-100">App Launcher</h2>
+          <p className="text-base text-slate-300">Dwell on an icon for 1.5s to open an application.</p>
         </div>
       </div>
 

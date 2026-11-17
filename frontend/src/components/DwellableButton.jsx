@@ -71,7 +71,7 @@ export default function DwellableButton({
         needsExitRef.current = false;
       }}
       onClick={onClick}
-      className={`relative overflow-hidden rounded-2xl border border-sky-300/20 bg-[#142445] text-slate-100 shadow-md transition duration-150 hover:border-sky-300/60 hover:shadow-glow ${minSizeClass} ${className}`}
+      className={`iris-button iris-button-keyboard relative overflow-hidden rounded-2xl border border-sky-300/20 bg-[#142445] text-slate-100 shadow-md transition duration-150 hover:border-sky-300/60 hover:shadow-glow ${minSizeClass} ${className}`}
     >
       <div className="relative z-10">{children}</div>
       {hovering && !disabled && (

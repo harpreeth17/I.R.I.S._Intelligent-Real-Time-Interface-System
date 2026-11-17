@@ -32,8 +32,26 @@ DEFAULT_SETTINGS = {
     'cursorOffsetY': 0,
     'calibrationSettleTime': 0.45,
     'webcamMode': 'auto',
+    'interfaceFontSize': 'large',
+    'displayContrast': 'standard',
+    'textDisplay': 'large',
+    'preferredTheme': 'dark',
     'demoMode': False,
 }
+
+
+def normalize_profile_name(profile_name: str) -> str:
+    if not isinstance(profile_name, str):
+        raise ValueError('Profile name must be text')
+
+    name = profile_name.strip()
+    if not name or name in {'.', '..'} or len(name) > 64:
+        raise ValueError('Profile name must be 1-64 characters')
+    if any(character in name for character in '\x00\\/:*?"<>|'):
+        raise ValueError('Profile name contains invalid characters')
+    if name.endswith('.') or name.endswith(' '):
+        raise ValueError('Profile name cannot end with a space or period')
+    return name
 
 
 def ensure_storage() -> None:
@@ -45,10 +63,19 @@ def ensure_storage() -> None:
 
 def load_profiles() -> dict:
     ensure_storage()
-    with PROFILES_JSON.open('r', encoding='utf-8') as f:
-        data = json.load(f)
+    try:
+        with PROFILES_JSON.open('r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as error:
+        print(f'I.R.I.S: profile metadata could not be loaded: {error}')
+        return {'activeProfile': None, 'profiles': {}}
+    if not isinstance(data, dict):
+        print('I.R.I.S: profile metadata has an invalid structure')
+        return {'activeProfile': None, 'profiles': {}}
     data.setdefault('activeProfile', None)
-    data.setdefault('profiles', {})
+    if not isinstance(data.get('profiles'), dict):
+        print('I.R.I.S: profile metadata contains an invalid profile list')
+        data['profiles'] = {}
     return data
 
 
@@ -59,7 +86,7 @@ def save_profiles(data: dict) -> None:
 
 
 def profile_model_path(profile_name: str) -> Path:
-    return PROFILES_DIR / f'{profile_name}.pkl'
+    return PROFILES_DIR / f'{normalize_profile_name(profile_name)}.pkl'
 
 
 def save_profile_model(profile_name: str, model_data: dict) -> None:
@@ -69,8 +96,15 @@ def save_profile_model(profile_name: str, model_data: dict) -> None:
 
 
 def load_profile_model(profile_name: str) -> dict | None:
-    path = profile_model_path(profile_name)
+    try:
+        path = profile_model_path(profile_name)
+    except ValueError:
+        return None
     if not path.exists():
         return None
-    with path.open('rb') as f:
-        return pickle.load(f)
+    try:
+        with path.open('rb') as f:
+            model_data = pickle.load(f)
+    except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ImportError, ValueError):
+        return None
+    return model_data if isinstance(model_data, dict) else None

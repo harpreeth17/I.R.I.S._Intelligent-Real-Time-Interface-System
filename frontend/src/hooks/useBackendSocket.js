@@ -62,7 +62,9 @@ export function useBackendSocket(onEvent) {
   const send = (message) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify(message));
+      return true;
     }
+    return false;
   };
 
   return { connected, send };

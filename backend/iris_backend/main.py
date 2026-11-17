@@ -29,6 +29,8 @@ if __package__ is None or __package__ == '':
         CALIBRATION_VALIDATION_POINT_SECONDS,
         CALIBRATION_VALIDATION_MIN_SAMPLES,
         CALIBRATION_PREVIEW_FPS,
+        TELEMETRY_SEND_TIMEOUT_SECONDS,
+        CALIBRATION_EDGE_MARGIN,
         DWELL_COOLDOWN,
         DWELL_DURATION,
         DWELL_RADIUS,
@@ -41,6 +43,8 @@ if __package__ is None or __package__ == '':
         DEFAULT_SETTINGS,
         load_profile_model,
         load_profiles,
+        normalize_profile_name,
+        profile_model_path,
         save_profile_model,
         save_profiles,
     )
@@ -57,6 +61,8 @@ else:
         CALIBRATION_VALIDATION_POINT_SECONDS,
         CALIBRATION_VALIDATION_MIN_SAMPLES,
         CALIBRATION_PREVIEW_FPS,
+        TELEMETRY_SEND_TIMEOUT_SECONDS,
+        CALIBRATION_EDGE_MARGIN,
         DWELL_COOLDOWN,
         DWELL_DURATION,
         DWELL_RADIUS,
@@ -69,6 +75,8 @@ else:
         DEFAULT_SETTINGS,
         load_profile_model,
         load_profiles,
+        normalize_profile_name,
+        profile_model_path,
         save_profile_model,
         save_profiles,
     )
@@ -114,6 +122,8 @@ class IrisRuntime:
         self.webcam_connected = False
         self.webcam_index = None
         self.webcam_mode = None
+        self.camera_status = 'initializing'
+        self.camera_recovery_hint = 'Starting camera detection.'
         self.last_webcam_scan_ts = 0.0
         self.webcam_rescan_interval = 2.0
 
@@ -138,6 +148,7 @@ class IrisRuntime:
         self.blink_started_ts = None
 
         self.calibration_active = False
+        self.calibration_validated = False
         self.calibration_targets = self._build_calibration_targets()
         self.validation_targets = self._build_validation_targets()
         self.calibration_phase = 'idle'
@@ -212,8 +223,8 @@ class IrisRuntime:
     def _build_calibration_targets(self):
         # Keep a small inset so the target remains visible, while covering the
         # complete usable screen including all four corners.
-        xs = (0.01, 0.25, 0.5, 0.75, 0.99)
-        ys = (0.01, 0.25, 0.5, 0.75, 0.99)
+        xs = np.linspace(CALIBRATION_EDGE_MARGIN, 1.0 - CALIBRATION_EDGE_MARGIN, 5)
+        ys = np.linspace(CALIBRATION_EDGE_MARGIN, 1.0 - CALIBRATION_EDGE_MARGIN, 5)
         points = []
         for y_norm in ys:
             for x_norm in xs:
@@ -224,8 +235,9 @@ class IrisRuntime:
         # A short fresh pass covers corners, edges, and the centre without
         # repeating the full 25-point training duration.
         points = []
-        for y_norm in (0.01, 0.5, 0.99):
-            for x_norm in (0.01, 0.5, 0.99):
+        edge = CALIBRATION_EDGE_MARGIN
+        for y_norm in (edge, 0.5, 1.0 - edge):
+            for x_norm in (edge, 0.5, 1.0 - edge):
                 points.append((int(x_norm * self.screen_w), int(y_norm * self.screen_h)))
         return points
 
@@ -234,12 +246,51 @@ class IrisRuntime:
             return
 
         profile_data = self.profile_db.get('profiles', {}).get(self.active_profile, {})
+        if not isinstance(profile_data, dict):
+            return
         settings = profile_data.get('settings', {})
         self.settings.update(settings)
+        profile_font_size = settings.get(
+            'interfaceFontSize',
+            settings.get('textDisplay', self.settings.get('interfaceFontSize', 'large')),
+        )
+        accessibility = profile_data.get('accessibility', {})
+        if isinstance(accessibility, dict):
+            interface_font_size = accessibility.get(
+                'interfaceFontSize',
+                accessibility.get(
+                    'textDisplay',
+                    profile_font_size,
+                ),
+            )
+            self.settings.update(
+                {
+                    'keyboardSize': accessibility.get(
+                        'keyboardSize', self.settings.get('keyboardSize', 'large')
+                    ),
+                    'cursorSpeedMultiplier': accessibility.get(
+                        'cursorSpeed', self.settings.get('cursorSpeedMultiplier', 1.0)
+                    ),
+                    'dwellDuration': accessibility.get(
+                        'dwellDuration', self.settings.get('dwellDuration', DWELL_DURATION)
+                    ),
+                    'displayContrast': accessibility.get(
+                        'displayContrast', self.settings.get('displayContrast', 'standard')
+                    ),
+                    'textDisplay': interface_font_size,
+                    'interfaceFontSize': interface_font_size,
+                    'preferredTheme': accessibility.get(
+                        'preferredTheme', self.settings.get('preferredTheme', 'dark')
+                    ),
+                }
+            )
 
         model_data = load_profile_model(self.active_profile)
         if model_data:
             self.calibrator = PolynomialCalibrator.from_dict(model_data)
+            self.calibration_validated = bool(
+                self.calibrator.fitted and self.calibrator.validated
+            )
 
     def _persist_current_settings(self):
         if not self.active_profile:
@@ -249,6 +300,18 @@ class IrisRuntime:
         profiles = self.profile_db.setdefault('profiles', {})
         profile_item = profiles.setdefault(self.active_profile, {})
         profile_item['settings'] = self.settings
+        accessibility = profile_item.setdefault('accessibility', {})
+        accessibility.update(
+            {
+                'keyboardSize': self.settings.get('keyboardSize', 'large'),
+                'cursorSpeed': self.settings.get('cursorSpeedMultiplier', 1.0),
+                'dwellDuration': self.settings.get('dwellDuration', DWELL_DURATION),
+                'displayContrast': self.settings.get('displayContrast', 'standard'),
+                'interfaceFontSize': self.settings.get('interfaceFontSize', 'large'),
+                'textDisplay': self.settings.get('interfaceFontSize', 'large'),
+                'preferredTheme': self.settings.get('preferredTheme', 'dark'),
+            }
+        )
         save_profiles(self.profile_db)
 
     def _webcam_mode(self):
@@ -279,6 +342,8 @@ class IrisRuntime:
                 self.webcam_index = index
                 self.webcam_mode = self._webcam_mode()
                 self.webcam_connected = True
+                self.camera_status = 'connected'
+                self.camera_recovery_hint = 'Camera is ready. Keep your face centered in view.'
                 self.error_message = None
                 self.last_webcam_scan_ts = time.perf_counter()
                 print(f'I.R.I.S: webcam opened at index {index} with backend {backend}')
@@ -318,6 +383,8 @@ class IrisRuntime:
             return
 
         # Try several OpenCV capture backends on Windows to avoid MSMF grab issues.
+        self.camera_status = 'initializing'
+        self.camera_recovery_hint = 'Searching for an available camera.'
         backends = []
         try:
             # prefer DirectShow, then MSMF, then system default
@@ -338,6 +405,10 @@ class IrisRuntime:
         self.cap = None
         self.webcam_index = None
         self.webcam_connected = False
+        self.camera_status = 'unavailable'
+        self.camera_recovery_hint = (
+            'Check Windows camera permissions, connect a camera, close other camera apps, and retry.'
+        )
         self.last_webcam_scan_ts = now_ts
         self.error_message = (
             'Webcam unavailable or in use. Close other apps using the camera and retry.'
@@ -619,11 +690,15 @@ class IrisRuntime:
         self.calibration_validation_screen = []
         self.calibration_result = None
         self.calibration_phase = 'training'
+        self.calibration_validated = False
+        self.calibrator.validated = False
 
     def _cancel_calibration(self):
         self.calibration_active = False
         self._reset_calibration_point()
         self.calibration_phase = 'idle'
+        self.calibration_validated = False
+        self.calibrator.validated = False
         self.calibration_result = {'ok': False, 'message': 'Calibration cancelled'}
 
     def _advance_calibration(self, iris_vector, head_pose):
@@ -732,27 +807,240 @@ class IrisRuntime:
                 'validationSamples': validation['sampleCount'],
                 'samples': len(self.calibration_iris_samples),
             }
+            self.calibration_validated = bool(validation_passed)
+            self.calibrator.validated = self.calibration_validated
 
     def _training_rmse(self):
+        if len(self.calibrator.training_iris_samples) == 0:
+            return 0.0
         predictions = np.asarray(
-            [self.calibrator.predict(sample) for sample in self.calibration_iris_samples]
+            [
+                self.calibrator.predict(sample)
+                for sample in self.calibrator.training_iris_samples
+            ]
         )
-        targets = np.asarray(self.calibration_screen_samples, dtype=np.float64)
+        targets = self.calibrator.training_screen_points
         return float(np.sqrt(np.mean(np.linalg.norm(predictions - targets, axis=1) ** 2)))
 
-    def _save_profile(self, name):
-        if not self.calibrator.fitted:
-            return {'ok': False, 'error': 'No calibration data available'}
+    def _profile_details(self):
+        details = []
+        for name, profile in self.profile_db.get('profiles', {}).items():
+            if not isinstance(profile, dict):
+                profile = {}
+            model_data = load_profile_model(name)
+            calibrated = bool(
+                profile.get('calibrated', False)
+                or (
+                    model_data
+                    and model_data.get('fitted', True)
+                    and model_data.get('validated', True)
+                )
+            )
+            details.append(
+                {
+                    'name': name,
+                    'calibrated': calibrated,
+                    'updatedAt': profile.get('updatedAt'),
+                    'personal': profile.get('personal', {}),
+                    'caregiver': profile.get('caregiver', {}),
+                    'accessibility': profile.get('accessibility', {}),
+                    'calibration': profile.get(
+                        'calibration',
+                        {'status': 'Validated' if calibrated else 'Uncalibrated'},
+                    ),
+                }
+            )
+        return details
 
-        name = name.strip()
-        if not name:
-            return {'ok': False, 'error': 'Profile name cannot be empty'}
+    def _profiles_payload(self, result=None):
+        payload = {
+            'profiles': list(self.profile_db.get('profiles', {}).keys()),
+            'profileDetails': self._profile_details(),
+            'activeProfile': self.active_profile,
+            'settings': self.settings,
+        }
+        if result is not None:
+            payload['result'] = result
+        return payload
 
-        save_profile_model(name, self.calibrator.to_dict())
+    def _existing_profile_name(self, name, exclude=None):
+        name_key = name.casefold()
+        for existing_name in self.profile_db.get('profiles', {}):
+            if existing_name != exclude and existing_name.casefold() == name_key:
+                return existing_name
+        return None
+
+    @staticmethod
+    def _optional_profile_text(value, field_name, max_length):
+        if value is None:
+            return ''
+        if not isinstance(value, str):
+            raise ValueError(f'{field_name} must be text')
+        value = value.strip()
+        if len(value) > max_length:
+            raise ValueError(f'{field_name} is too long')
+        return value
+
+    def _profile_fields(self, data, require_full_name=True):
+        data = data if isinstance(data, dict) else {}
+        personal_data = data.get('personal', {})
+        caregiver_data = data.get('caregiver', {})
+        accessibility_data = data.get('accessibility', {})
+        if not isinstance(personal_data, dict) or not isinstance(caregiver_data, dict) or not isinstance(accessibility_data, dict):
+            raise ValueError('Profile sections must be objects')
+
+        full_name = self._optional_profile_text(
+            personal_data.get('fullName', ''),
+            'Full name',
+            120,
+        )
+        if require_full_name and not full_name:
+            raise ValueError('Full name is required')
+
+        photo = self._optional_profile_text(personal_data.get('photo', ''), 'Profile photo', 700000)
+        if photo and not photo.startswith('data:image/'):
+            raise ValueError('Profile photo must be an image')
+
+        keyboard_size = accessibility_data.get('keyboardSize', self.settings.get('keyboardSize', 'large'))
+        if keyboard_size not in {'small', 'medium', 'large'}:
+            raise ValueError('Keyboard size must be Small, Medium, or Large')
+        contrast = accessibility_data.get('displayContrast', 'standard')
+        if contrast not in {'standard', 'high'}:
+            raise ValueError('Display contrast must be standard or high')
+        voice_typing = bool(accessibility_data.get('voiceTyping', True))
+        interface_font_size = accessibility_data.get(
+            'interfaceFontSize',
+            accessibility_data.get(
+                'textDisplay',
+                self.settings.get(
+                    'interfaceFontSize',
+                    self.settings.get('textDisplay', 'large'),
+                ),
+            ),
+        )
+        if interface_font_size not in {'small', 'standard', 'large', 'extra_large'}:
+            raise ValueError('Interface font size is invalid')
+        preferred_theme = accessibility_data.get('preferredTheme', 'dark')
+        if preferred_theme not in {'light', 'dark'}:
+            raise ValueError('Preferred theme must be light or dark')
+
+        cursor_speed = float(accessibility_data.get('cursorSpeed', self.settings.get('cursorSpeedMultiplier', 1.0)))
+        dwell_duration = float(accessibility_data.get('dwellDuration', self.settings.get('dwellDuration', DWELL_DURATION)))
+        if not 0.25 <= cursor_speed <= 2.0:
+            raise ValueError('Cursor speed must be between 0.25 and 2.0')
+        if not 0.3 <= dwell_duration <= 3.0:
+            raise ValueError('Dwell duration must be between 0.3 and 3.0 seconds')
+
+        return {
+            'personal': {
+                'fullName': full_name,
+                'preferredName': self._optional_profile_text(personal_data.get('preferredName', ''), 'Preferred name', 80),
+                'ageOrDob': self._optional_profile_text(personal_data.get('ageOrDob', ''), 'Age or date of birth', 40),
+                'gender': self._optional_profile_text(personal_data.get('gender', ''), 'Gender', 40),
+                'photo': photo,
+            },
+            'caregiver': {
+                'name': self._optional_profile_text(caregiver_data.get('name', ''), 'Caregiver name', 120),
+                'relationship': self._optional_profile_text(caregiver_data.get('relationship', ''), 'Caregiver relationship', 80),
+                'contactNumber': self._optional_profile_text(caregiver_data.get('contactNumber', ''), 'Caregiver contact number', 40),
+                'emergencyContact': self._optional_profile_text(caregiver_data.get('emergencyContact', ''), 'Emergency contact', 120),
+            },
+            'accessibility': {
+                'keyboardSize': keyboard_size,
+                'cursorSpeed': cursor_speed,
+                'dwellDuration': dwell_duration,
+                'displayContrast': contrast,
+                'preferredTheme': preferred_theme,
+                'voiceTyping': voice_typing,
+                'interfaceFontSize': interface_font_size,
+                'textDisplay': interface_font_size,
+            },
+        }
+
+    def _create_profile(self, name, profile_data=None):
+        try:
+            name = normalize_profile_name(name)
+            fields = self._profile_fields(profile_data or {})
+        except ValueError as error:
+            return {'ok': False, 'error': str(error)}
 
         profiles = self.profile_db.setdefault('profiles', {})
-        profiles[name] = profiles.get(name, {})
-        profiles[name]['settings'] = self.settings
+        if self._existing_profile_name(name) or profile_model_path(name).exists():
+            return {'ok': False, 'error': 'A profile with that name already exists'}
+
+        profiles[name] = {
+            'settings': self.settings.copy(),
+            'calibrated': False,
+            **fields,
+            'calibration': {'status': 'Uncalibrated'},
+            'createdAt': int(time.time()),
+            'updatedAt': int(time.time()),
+        }
+        save_profiles(self.profile_db)
+        return {
+            'ok': True,
+            'profile': name,
+            'message': 'Profile created. Complete calibration before using it for gaze control.',
+        }
+
+    def _save_profile(self, name):
+        if (
+            not self.calibrator.fitted
+            or not self.calibrator.validated
+            or not self.calibration_validated
+        ):
+            return {'ok': False, 'error': 'Calibration must pass validation before saving'}
+
+        try:
+            name = normalize_profile_name(name)
+        except ValueError as error:
+            return {'ok': False, 'error': str(error)}
+
+        profiles = self.profile_db.setdefault('profiles', {})
+        existing_name = self._existing_profile_name(name)
+        if existing_name and existing_name != name:
+            return {'ok': False, 'error': 'A profile with that name already exists'}
+        existing = profiles.get(name)
+        if existing and existing.get('calibrated', False):
+            return {'ok': False, 'error': 'A calibrated profile with that name already exists'}
+        if profile_model_path(name).exists():
+            return {'ok': False, 'error': 'A profile with that name already exists'}
+
+        save_profile_model(name, self.calibrator.to_dict())
+        profiles[name] = existing or {
+            'personal': {
+                'fullName': name,
+                'preferredName': '',
+                'ageOrDob': '',
+                'gender': '',
+                'photo': '',
+            },
+            'caregiver': {
+                'name': '',
+                'relationship': '',
+                'contactNumber': '',
+                'emergencyContact': '',
+            },
+            'accessibility': {
+                'keyboardSize': self.settings.get('keyboardSize', 'large'),
+                'cursorSpeed': self.settings.get('cursorSpeedMultiplier', 1.0),
+                'dwellDuration': self.settings.get('dwellDuration', DWELL_DURATION),
+                'displayContrast': 'standard',
+                'preferredTheme': 'dark',
+                'voiceTyping': True,
+                'interfaceFontSize': 'large',
+                'textDisplay': 'large',
+            },
+        }
+        profiles[name]['settings'] = self.settings.copy()
+        profiles[name]['calibrated'] = True
+        profiles[name]['calibration'] = {
+            'status': 'Validated',
+            'validationRmse': (self.calibration_result or {}).get('validationRmse'),
+            'lastCalibratedAt': int(time.time()),
+            'screenWidth': self.screen_w,
+            'screenHeight': self.screen_h,
+        }
         profiles[name]['updatedAt'] = int(time.time())
         self.profile_db['activeProfile'] = name
         self.active_profile = name
@@ -761,17 +1049,146 @@ class IrisRuntime:
         return {'ok': True, 'profile': name}
 
     def _load_profile(self, name):
-        model_data = load_profile_model(name)
-        if not model_data:
+        try:
+            name = normalize_profile_name(name)
+        except ValueError as error:
+            return {'ok': False, 'error': str(error)}
+
+        if name not in self.profile_db.get('profiles', {}):
             return {'ok': False, 'error': f'Profile not found: {name}'}
 
-        self.calibrator = PolynomialCalibrator.from_dict(model_data)
+        model_data = load_profile_model(name)
+        profile_data = self.profile_db['profiles'][name]
+        if not isinstance(profile_data, dict):
+            return {'ok': False, 'error': 'Profile metadata is corrupted'}
+        if not model_data and profile_data.get('calibrated', False):
+            return {'ok': False, 'error': f'Profile model is missing or corrupted: {name}'}
+
+        self.calibrator = (
+            PolynomialCalibrator.from_dict(model_data)
+            if model_data
+            else PolynomialCalibrator()
+        )
+        self.calibration_validated = bool(self.calibrator.fitted and self.calibrator.validated)
         self.active_profile = name
         self.profile_db['activeProfile'] = name
 
-        profile_settings = self.profile_db.get('profiles', {}).get(name, {}).get('settings', {})
+        profile_settings = profile_data.get('settings', {})
         self.settings.update(profile_settings)
+        profile_font_size = profile_settings.get(
+            'interfaceFontSize',
+            profile_settings.get('textDisplay', self.settings.get('interfaceFontSize', 'large')),
+        )
+        accessibility = profile_data.get('accessibility', {})
+        if isinstance(accessibility, dict):
+            interface_font_size = accessibility.get(
+                'interfaceFontSize',
+                accessibility.get(
+                    'textDisplay',
+                    profile_font_size,
+                ),
+            )
+            self.settings.update(
+                {
+                    'keyboardSize': accessibility.get(
+                        'keyboardSize', self.settings.get('keyboardSize', 'large')
+                    ),
+                    'cursorSpeedMultiplier': accessibility.get(
+                        'cursorSpeed', self.settings.get('cursorSpeedMultiplier', 1.0)
+                    ),
+                    'dwellDuration': accessibility.get(
+                        'dwellDuration', self.settings.get('dwellDuration', DWELL_DURATION)
+                    ),
+                    'displayContrast': accessibility.get(
+                        'displayContrast', self.settings.get('displayContrast', 'standard')
+                    ),
+                    'interfaceFontSize': interface_font_size,
+                    'textDisplay': interface_font_size,
+                    'preferredTheme': accessibility.get(
+                        'preferredTheme', self.settings.get('preferredTheme', 'dark')
+                    ),
+                }
+            )
         save_profiles(self.profile_db)
+        return {'ok': True, 'profile': name}
+
+    def _update_profile(self, name, profile_data):
+        try:
+            name = normalize_profile_name(name)
+            fields = self._profile_fields(profile_data)
+        except ValueError as error:
+            return {'ok': False, 'error': str(error)}
+
+        profiles = self.profile_db.get('profiles', {})
+        current = profiles.get(name)
+        if not isinstance(current, dict):
+            return {'ok': False, 'error': 'Profile not found or corrupted'}
+        current.update(fields)
+        current['updatedAt'] = int(time.time())
+        if name == self.active_profile:
+            self.settings['keyboardSize'] = fields['accessibility']['keyboardSize']
+            self.settings['cursorSpeedMultiplier'] = fields['accessibility']['cursorSpeed']
+            self.settings['dwellDuration'] = fields['accessibility']['dwellDuration']
+            self.settings['displayContrast'] = fields['accessibility']['displayContrast']
+            self.settings['interfaceFontSize'] = fields['accessibility']['interfaceFontSize']
+            self.settings['textDisplay'] = fields['accessibility']['interfaceFontSize']
+            self.settings['preferredTheme'] = fields['accessibility']['preferredTheme']
+            current['settings'] = self.settings.copy()
+        save_profiles(self.profile_db)
+        return {'ok': True, 'profile': name, 'message': 'Profile details updated.'}
+
+    def _rename_profile(self, old_name, new_name):
+        try:
+            old_name = normalize_profile_name(old_name)
+            new_name = normalize_profile_name(new_name)
+        except ValueError as error:
+            return {'ok': False, 'error': str(error)}
+
+        profiles = self.profile_db.get('profiles', {})
+        if old_name not in profiles:
+            return {'ok': False, 'error': f'Profile not found: {old_name}'}
+        if self._existing_profile_name(new_name, exclude=old_name) or profile_model_path(new_name).exists():
+            return {'ok': False, 'error': 'A profile with that name already exists'}
+
+        old_model = profile_model_path(old_name)
+        new_model = profile_model_path(new_name)
+        try:
+            if old_model.exists():
+                old_model.replace(new_model)
+        except OSError as error:
+            return {'ok': False, 'error': f'Unable to rename profile model: {error}'}
+
+        profiles[new_name] = profiles.pop(old_name)
+        profiles[new_name]['updatedAt'] = int(time.time())
+        if self.active_profile == old_name:
+            self.active_profile = new_name
+            self.profile_db['activeProfile'] = new_name
+        save_profiles(self.profile_db)
+        return {'ok': True, 'profile': new_name}
+
+    def _delete_profile(self, name):
+        try:
+            name = normalize_profile_name(name)
+        except ValueError as error:
+            return {'ok': False, 'error': str(error)}
+
+        profiles = self.profile_db.get('profiles', {})
+        if name not in profiles:
+            return {'ok': False, 'error': f'Profile not found: {name}'}
+        if name == self.active_profile:
+            return {
+                'ok': False,
+                'error': 'Load another profile before deleting the active profile',
+            }
+
+        model_path = profile_model_path(name)
+        try:
+            if model_path.exists():
+                model_path.unlink()
+            del profiles[name]
+            save_profiles(self.profile_db)
+        except OSError as error:
+            return {'ok': False, 'error': f'Unable to delete profile: {error}'}
         return {'ok': True, 'profile': name}
 
     async def _broadcast(self, payload):
@@ -808,7 +1225,12 @@ class IrisRuntime:
 
     async def _send_telemetry(self, websocket, encoded):
         try:
-            await websocket.send(encoded)
+            await asyncio.wait_for(
+                websocket.send(encoded),
+                timeout=TELEMETRY_SEND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            self.clients.discard(websocket)
         except Exception:
             self.clients.discard(websocket)
 
@@ -822,6 +1244,8 @@ class IrisRuntime:
         msg_type = data.get('type')
 
         if msg_type == 'start_calibration':
+            self.calibration_validated = False
+            self.calibrator.validated = False
             if not self.mediapipe_ready:
                 self.calibration_result = {
                     'ok': False,
@@ -851,9 +1275,7 @@ class IrisRuntime:
             await self._broadcast(
                 {
                     'type': 'profiles',
-                    'result': result,
-                    'profiles': list(self.profile_db.get('profiles', {}).keys()),
-                    'activeProfile': self.active_profile,
+                    **self._profiles_payload(result),
                 }
             )
 
@@ -862,9 +1284,43 @@ class IrisRuntime:
             await self._broadcast(
                 {
                     'type': 'profiles',
-                    'result': result,
-                    'profiles': list(self.profile_db.get('profiles', {}).keys()),
-                    'activeProfile': self.active_profile,
+                    **self._profiles_payload(result),
+                }
+            )
+
+        elif msg_type == 'create_profile':
+            result = self._create_profile(data.get('name', ''), data.get('profile'))
+            await self._broadcast(
+                {
+                    'type': 'profiles',
+                    **self._profiles_payload(result),
+                }
+            )
+
+        elif msg_type == 'update_profile':
+            result = self._update_profile(data.get('name', ''), data.get('profile'))
+            await self._broadcast(
+                {
+                    'type': 'profiles',
+                    **self._profiles_payload(result),
+                }
+            )
+
+        elif msg_type == 'rename_profile':
+            result = self._rename_profile(data.get('oldName', ''), data.get('newName', ''))
+            await self._broadcast(
+                {
+                    'type': 'profiles',
+                    **self._profiles_payload(result),
+                }
+            )
+
+        elif msg_type == 'delete_profile':
+            result = self._delete_profile(data.get('name', ''))
+            await self._broadcast(
+                {
+                    'type': 'profiles',
+                    **self._profiles_payload(result),
                 }
             )
 
@@ -888,8 +1344,7 @@ class IrisRuntime:
                 {
                     'type': 'state',
                     'settings': self.settings,
-                    'profiles': list(self.profile_db.get('profiles', {}).keys()),
-                    'activeProfile': self.active_profile,
+                    **self._profiles_payload(),
                     'calibration': self._calibration_payload(),
                 }
             )
@@ -901,8 +1356,7 @@ class IrisRuntime:
                 {
                     'type': 'hello',
                     'settings': self.settings,
-                    'profiles': list(self.profile_db.get('profiles', {}).keys()),
-                    'activeProfile': self.active_profile,
+                    **self._profiles_payload(),
                     'calibration': self._calibration_payload(),
                 }
             )
@@ -917,6 +1371,9 @@ class IrisRuntime:
                 await self._handle_message(data)
         finally:
             self.clients.discard(websocket)
+            task = self._telemetry_send_tasks.pop(websocket, None)
+            if task is not None and not task.done():
+                task.cancel()
 
     async def process_loop(self):
         target_frame_dt = 1.0 / TARGET_FPS
@@ -937,11 +1394,24 @@ class IrisRuntime:
                 self.cursor_x, self.cursor_y = self.kalman.step((mx, my), dt)
                 self.dwell.progress = 0.0
                 self.webcam_connected = False
-                self.error_message = None
+                if self.mediapipe_ready:
+                    self.camera_status = 'demo'
+                    self.camera_recovery_hint = 'Demo mode is active; no webcam frames are being processed.'
+                    self.error_message = None
+                else:
+                    self.camera_status = 'mediapipe_error'
+                    self.camera_recovery_hint = (
+                        'MediaPipe could not start. Check the backend installation or enable Demo mode.'
+                    )
+                    self.error_message = self.mediapipe_error
             else:
                 if not self.mediapipe_ready:
                     self.error_message = self.mediapipe_error
                     self.webcam_connected = False
+                    self.camera_status = 'mediapipe_error'
+                    self.camera_recovery_hint = (
+                        'MediaPipe could not start. Check the backend installation or enable Demo mode.'
+                    )
                     await asyncio.sleep(0.2)
                     await self._broadcast(
                         {
@@ -974,6 +1444,10 @@ class IrisRuntime:
                 success, frame = self.cap.read()
                 if not success:
                     self.webcam_connected = False
+                    self.camera_status = 'device_error'
+                    self.camera_recovery_hint = (
+                        'The camera stopped responding. Check its connection and Windows privacy permissions.'
+                    )
                     self.error_message = 'Webcam frame capture failed.'
                     self._close_webcam()
                     await asyncio.sleep(0.1)
@@ -1002,6 +1476,9 @@ class IrisRuntime:
 
                 if landmarks is not None and len(landmarks) > 473:
                     face_found = True
+                    self.camera_status = 'connected'
+                    self.camera_recovery_hint = 'Camera is ready. Face detected.'
+                    self.error_message = None
                     iris_vector = self._iris_vector(landmarks)
                     if not self._is_valid_iris_vector(iris_vector):
                         self.error_message = 'Gaze landmark drift detected. Hold gaze steady for a moment.'
@@ -1028,6 +1505,10 @@ class IrisRuntime:
                         if blink_click:
                             click_event = blink_click
                 else:
+                    self.camera_status = 'face_not_detected'
+                    self.camera_recovery_hint = (
+                        'Move into the camera view, improve lighting, and keep your face centered.'
+                    )
                     self.error_message = 'Face not detected. Center your face in the camera frame.'
                     self.dwell.progress = 0.0
                     if self.calibration_active:
@@ -1060,14 +1541,21 @@ class IrisRuntime:
             await asyncio.sleep(delay)
 
     def _status_payload(self, face_found=False, ear=1.0):
+        camera_status = (
+            'mediapipe_error'
+            if not self.mediapipe_ready
+            else self.camera_status
+        )
         return {
             'webcamConnected': self.webcam_connected,
-            'calibrated': bool(self.calibrator.fitted),
+            'calibrated': bool(self.calibrator.fitted and self.calibration_validated),
             'fps': 0.0,
             'latencyMs': round(self.pipeline_latency_ms, 2),
             'previewEncodeMs': round(self.preview_encode_ms, 2),
             'broadcastScheduleMs': round(self.broadcast_latency_ms, 2),
             'error': self.error_message,
+            'cameraStatus': camera_status,
+            'cameraRecoveryHint': self.camera_recovery_hint,
             'demoMode': bool(self.settings.get('demoMode', False)),
             'faceFound': face_found,
             'blinkEAR': round(float(ear), 3),
